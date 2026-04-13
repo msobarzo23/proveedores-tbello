@@ -282,19 +282,44 @@ export default function App() {
   }, [parsedData, gasUrl]);
 
   // ─── FETCH DATA FOR SEARCH ────────────────────────────────────
+  const [fetchError, setFetchError] = useState(null);
   const fetchData = useCallback(async () => {
     if (!gasUrl || gasUrl === "PEGAR_URL_AQUI") return;
     setLoading(true);
+    setFetchError(null);
     try {
-      const res = await fetch(`${gasUrl}?action=read`);
+      // GAS Web Apps redirect (302) — fetch follows it automatically
+      const res = await fetch(`${gasUrl}?action=read`, {
+        redirect: "follow",
+        headers: { "Accept": "application/json" },
+      });
       const text = await res.text();
-      const json = JSON.parse(text);
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        // Sometimes GAS returns HTML on first redirect, try extracting JSON
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+          json = JSON.parse(match[0]);
+        } else {
+          throw new Error("Respuesta no es JSON. ¿La URL del Apps Script es correcta?");
+        }
+      }
       if (json.ok) {
-        setSearchData(json.data || []);
+        // Normalize data: GAS may return numbers where we expect strings
+        const normalized = (json.data || []).map(row =>
+          row.map(cell => (cell != null ? cell : ""))
+        );
+        setSearchData(normalized);
         setLastUpdate(new Date().toLocaleString("es-CL"));
+        setFetchError(null);
+      } else {
+        setFetchError(json.error || "Error desconocido del servidor");
       }
     } catch (err) {
       console.error("Error fetching data:", err);
+      setFetchError(err.message);
     } finally {
       setLoading(false);
     }
@@ -311,22 +336,27 @@ export default function App() {
   const filtered = useMemo(() => {
     const q = searchText.toLowerCase().trim();
     return searchData.filter(row => {
-      // Text search: RUT (4), Proveedor (5), Nº Doc (11)
+      // Text search: RUT (4), Proveedor (5), Nº Doc (11), Número (3)
+      // All values converted to string - GAS returns numbers as numbers
       if (q) {
-        const rut = (row[4] || "").toLowerCase();
-        const prov = (row[5] || "").toLowerCase();
-        const ndoc = (row[11] || "").toString().toLowerCase();
-        const num = (row[3] || "").toString().toLowerCase();
-        if (!rut.includes(q) && !prov.includes(q) && !ndoc.includes(q) && !num.includes(q)) return false;
+        const rut = String(row[4] ?? "").toLowerCase();
+        const prov = String(row[5] ?? "").toLowerCase();
+        const ndoc = String(row[11] ?? "").toLowerCase();
+        const num = String(row[3] ?? "").toLowerCase();
+        const condicion = String(row[0] ?? "").toLowerCase();
+        const tipo = String(row[2] ?? "").toLowerCase();
+        const doc = String(row[9] ?? "").toLowerCase();
+        if (!rut.includes(q) && !prov.includes(q) && !ndoc.includes(q) && !num.includes(q) 
+            && !condicion.includes(q) && !tipo.includes(q) && !doc.includes(q)) return false;
       }
       // Condición
       if (filterCondicion !== "TODAS") {
-        if (row[0] !== filterCondicion) return false;
+        if (String(row[0]) !== filterCondicion) return false;
       }
       // Tipo
-      if (filterTipo !== "TODOS" && row[2] !== filterTipo) return false;
+      if (filterTipo !== "TODOS" && String(row[2]) !== filterTipo) return false;
       // Documento
-      if (filterDocumento !== "TODOS" && row[9] !== filterDocumento) return false;
+      if (filterDocumento !== "TODOS" && String(row[9]) !== filterDocumento) return false;
       // Vencimiento range
       if (!isDateInRange(row[10], filterVencDesde, filterVencHasta)) return false;
       // Monto (saldo col index 8)
@@ -758,6 +788,27 @@ export default function App() {
         {/* ═══ SEARCH TAB ═══ */}
         {tab === "search" && (
           <div>
+            {/* Fetch error */}
+            {fetchError && (
+              <div style={{
+                marginBottom: "16px",
+                padding: "14px 18px",
+                borderRadius: "12px",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                background: "rgba(239,68,68,0.1)",
+                border: "1px solid rgba(239,68,68,0.3)",
+                color: "#f87171",
+                fontSize: "13px",
+              }}>
+                <IconAlert />
+                <div>
+                  <div style={{ fontWeight: 600 }}>Error al cargar datos del Google Sheet</div>
+                  <div style={{ opacity: 0.8, marginTop: "2px" }}>{fetchError}</div>
+                </div>
+              </div>
+            )}
             {/* Search bar */}
             <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
               <div style={{

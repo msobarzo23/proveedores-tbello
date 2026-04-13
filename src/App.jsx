@@ -30,17 +30,28 @@ const HEADERS = [
 const HEADER_KEYS = ["D","F","G","H","I","J","K","L","M","O","P","Q"];
 
 // ─── HELPERS ───────────────────────────────────────────────────────
+
+// Parse Chilean formatted number: "123.855" → 123855, "-7.995.173" → -7995173
+const parseCLP = (v) => {
+  if (v == null || v === "") return 0;
+  if (typeof v === "number") return v;
+  const s = String(v).trim();
+  // Remove dots (thousands separator in CL), keep minus sign
+  const cleaned = s.replace(/\./g, "").replace(/,/g, ".");
+  const n = Number(cleaned);
+  return isNaN(n) ? 0 : n;
+};
+
 const fmt = (n) => {
-  if (n == null || n === "" || isNaN(n)) return "$0";
-  const num = Math.round(Number(n));
+  const num = Math.round(parseCLP(n));
+  if (num === 0 && (n == null || n === "")) return "$0";
   const neg = num < 0;
   const abs = Math.abs(num).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   return neg ? `-$${abs}` : `$${abs}`;
 };
 
 const fmtShort = (n) => {
-  if (n == null || isNaN(n)) return "$0";
-  const num = Math.round(Number(n));
+  const num = Math.round(parseCLP(n));
   const abs = Math.abs(num);
   if (abs >= 1_000_000_000) return `$${(num / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `$${(num / 1_000_000).toFixed(1)}M`;
@@ -361,11 +372,11 @@ export default function App() {
       if (!isDateInRange(row[10], filterVencDesde, filterVencHasta)) return false;
       // Monto (saldo col index 8)
       if (filterMontoMin) {
-        const saldo = Math.abs(Number(row[8]) || 0);
+        const saldo = Math.abs(parseCLP(row[8]));
         if (saldo < Number(filterMontoMin)) return false;
       }
       if (filterMontoMax) {
-        const saldo = Math.abs(Number(row[8]) || 0);
+        const saldo = Math.abs(parseCLP(row[8]));
         if (saldo > Number(filterMontoMax)) return false;
       }
       return true;
@@ -381,8 +392,8 @@ export default function App() {
       let va = a[idx] || "";
       let vb = b[idx] || "";
       if (moneyIdx.includes(idx)) {
-        va = Number(va) || 0;
-        vb = Number(vb) || 0;
+        va = parseCLP(va);
+        vb = parseCLP(vb);
       } else {
         va = va.toString().toLowerCase();
         vb = vb.toString().toLowerCase();
@@ -407,9 +418,9 @@ export default function App() {
   const totals = useMemo(() => {
     let cargo = 0, abono = 0, saldo = 0;
     filtered.forEach(r => {
-      cargo += Number(r[6]) || 0;
-      abono += Number(r[7]) || 0;
-      saldo += Number(r[8]) || 0;
+      cargo += parseCLP(r[6]);
+      abono += parseCLP(r[7]);
+      saldo += parseCLP(r[8]);
     });
     return { cargo, abono, saldo };
   }, [filtered]);

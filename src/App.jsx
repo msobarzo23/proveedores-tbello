@@ -2,8 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 
 // ─── CONFIG ────────────────────────────────────────────────────────
-// Reemplazar con tu Google Apps Script Web App URL una vez desplegado
-const GAS_URL = "PEGAR_URL_AQUI";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxo9D5SsIzHcpzj13eAQ8yg-5CcC1TFGHkgQeESHy6CzNEmsp3nivUrP2Cn1YMGy5p5/exec";
 
 // Columnas del xlsx de Defontana que nos interesan (0-indexed)
 const COL_MAP = {

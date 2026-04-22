@@ -37,29 +37,22 @@ const stampSave = (dataset) => {
 export const getTimestamps = () => lsGet(LS_KEYS.TIMESTAMPS, {}) || {};
 
 // ─── SAVE DATASETS ───────────────────────────────────────────────
-export async function saveDefontana(rows) {
-  lsSet(LS_KEYS.DEFONTANA, rows);
-  stampSave("defontana");
+async function saveWithFallback(key, dataset, rows) {
+  lsSet(key, rows);
+  stampSave(dataset);
   const url = getGasUrl();
   if (!url) return { ok: true, source: "local", count: rows.length };
-  return postDataset(url, "defontana", rows);
+  try {
+    return await postDataset(url, dataset, rows);
+  } catch (e) {
+    console.warn(`[${dataset}] GAS falló, guardado solo en local:`, e.message);
+    return { ok: true, source: "local", count: rows.length, warning: e.message };
+  }
 }
 
-export async function saveOC(rows) {
-  lsSet(LS_KEYS.OC, rows);
-  stampSave("oc");
-  const url = getGasUrl();
-  if (!url) return { ok: true, source: "local", count: rows.length };
-  return postDataset(url, "oc", rows);
-}
-
-export async function saveFactCL(rows) {
-  lsSet(LS_KEYS.FACTCL, rows);
-  stampSave("factcl");
-  const url = getGasUrl();
-  if (!url) return { ok: true, source: "local", count: rows.length };
-  return postDataset(url, "factcl", rows);
-}
+export const saveDefontana = (rows) => saveWithFallback(LS_KEYS.DEFONTANA, "defontana", rows);
+export const saveOC        = (rows) => saveWithFallback(LS_KEYS.OC, "oc", rows);
+export const saveFactCL    = (rows) => saveWithFallback(LS_KEYS.FACTCL, "factcl", rows);
 
 async function postDataset(url, dataset, rows) {
   const BATCH = 500;

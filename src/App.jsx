@@ -1,446 +1,107 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import * as XLSX from "xlsx";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import CargaTab from "./components/CargaTab";
+import InvoiceTable from "./components/InvoiceTable";
+import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./components/Icons";
+import { loadAll, saveReview, getGasUrl, setGasUrl } from "./lib/gas";
+import { groupDefontanaByInvoice } from "./lib/parsers";
+import { buildCrossref, applyReviewState } from "./lib/crossref";
 
-// ─── CONFIG ────────────────────────────────────────────────────────
-const GAS_URL = "https://script.google.com/macros/s/AKfycbxo9D5SsIzHcpzj13eAQ8yg-5CcC1TFGHkgQeESHy6CzNEmsp3nivUrP2Cn1YMGy5p5/exec";
-
-// Columnas del xlsx de Defontana que nos interesan (0-indexed)
-const COL_MAP = {
-  D: 3,  // Condición (1NOMINA / 2CONTADO)
-  F: 5,  // Fecha
-  G: 6,  // Tipo
-  H: 7,  // Número
-  I: 8,  // RUT / ID Ficha
-  J: 9,  // Nombre proveedor (Ficha)
-  K: 10, // Cargo ($)
-  L: 11, // Abono ($)
-  M: 12, // Saldo ($)
-  O: 14, // Tipo Documento
-  P: 15, // Vencimiento
-  Q: 16, // Número Doc.
-};
-
-// NUEVO ORDEN: CONDICION / FECHA / DOCUMENTO / Nº DOC / VENCIMIENTO / RUT / PROVEEDOR / CARGO / ABONO / SALDO / TIPO / NUMERO
-const HEADERS = [
-  "Condición",   // 0
-  "Fecha",       // 1
-  "Documento",   // 2
-  "Nº Doc.",     // 3
-  "Vencimiento", // 4
-  "RUT",         // 5
-  "Proveedor",   // 6
-  "Cargo",       // 7
-  "Abono",       // 8
-  "Saldo",       // 9
-  "Tipo",        // 10
-  "Número",      // 11
-];
-
-// Keys en el mismo nuevo orden (mapean a COL_MAP arriba)
-const HEADER_KEYS = ["D", "F", "O", "Q", "P", "I", "J", "K", "L", "M", "G", "H"];
-
-// Índices de columnas monetarias en el nuevo orden: Cargo=7, Abono=8, Saldo=9
-const MONEY_COLS = [7, 8, 9];
-
-// ─── HELPERS ───────────────────────────────────────────────────────
-
-const parseCLP = (v) => {
-  if (v == null || v === "") return 0;
-  if (typeof v === "number") return v;
-  const s = String(v).trim();
-  const cleaned = s.replace(/\./g, "").replace(/,/g, ".");
-  const n = Number(cleaned);
-  return isNaN(n) ? 0 : n;
-};
-
-const fmt = (n) => {
-  const num = Math.round(parseCLP(n));
-  if (num === 0 && (n == null || n === "")) return "$0";
-  const neg = num < 0;
-  const abs = Math.abs(num).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return neg ? `-$${abs}` : `$${abs}`;
-};
-
-const fmtShort = (n) => {
-  const num = Math.round(parseCLP(n));
-  const abs = Math.abs(num);
-  if (abs >= 1_000_000_000) return `$${(num / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `$${(num / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `$${(num / 1_000).toFixed(0)}K`;
-  return fmt(num);
-};
-
-const parseDate = (s) => {
-  if (!s) return null;
-  if (typeof s === "string" && s.includes("/")) {
-    const [d, m, y] = s.split("/");
-    return new Date(+y, +m - 1, +d);
-  }
-  return null;
-};
-
-const isDateInRange = (dateStr, from, to) => {
-  if (!from && !to) return true;
-  const d = parseDate(dateStr);
-  if (!d) return true;
-  if (from) {
-    const f = new Date(from + "T00:00:00");
-    if (d < f) return false;
-  }
-  if (to) {
-    const t = new Date(to + "T23:59:59");
-    if (d > t) return false;
-  }
-  return true;
-};
-
-// ─── ICONS ─────────────────────────────────────────────────────────
-const IconUpload = () => (
-  <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-  </svg>
-);
-
-const IconSearch = () => (
-  <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-  </svg>
-);
-
-const IconCheck = () => (
-  <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-    <polyline points="20 6 9 17 4 12"/>
-  </svg>
-);
-
-const IconAlert = () => (
-  <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-  </svg>
-);
-
-const IconFile = () => (
-  <svg width="40" height="40" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" strokeLinecap="round" strokeLinejoin="round"/>
-    <polyline points="14 2 14 8 20 8" strokeLinecap="round" strokeLinejoin="round"/>
-    <line x1="8" y1="13" x2="16" y2="13" strokeLinecap="round"/><line x1="8" y1="17" x2="16" y2="17" strokeLinecap="round"/>
-  </svg>
-);
-
-const IconTruck = () => (
-  <svg width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-    <rect x="1" y="3" width="15" height="13" rx="1"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
-    <circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>
-  </svg>
-);
-
-const IconRefresh = () => (
-  <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-    <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-  </svg>
-);
-
-const IconFilter = () => (
-  <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-  </svg>
-);
-
-const IconX = () => (
-  <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24">
-    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-  </svg>
-);
-
-// ─── MAIN APP ──────────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState("upload");
-  const [gasUrl, setGasUrl] = useState(() => {
-    try { return localStorage?.getItem?.("gas_url") || GAS_URL; } catch { return GAS_URL; }
-  });
+  const [tab, setTab] = useState("carga");
   const [showConfig, setShowConfig] = useState(false);
+  const [gasUrlInput, setGasUrlInput] = useState(() => getGasUrl());
 
-  // Upload state
-  const [file, setFile] = useState(null);
-  const [parsedData, setParsedData] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState(null);
-  const [parseStats, setParseStats] = useState(null);
-  const fileInputRef = useRef(null);
-
-  // Search state
-  const [searchData, setSearchData] = useState([]);
+  const [defontana, setDefontana] = useState([]);
+  const [oc, setOc] = useState([]);
+  const [factcl, setFactcl] = useState([]);
+  const [reviews, setReviews] = useState({});
+  const [source, setSource] = useState("local");
   const [loading, setLoading] = useState(false);
-  const [searchText, setSearchText] = useState("");
-  const [filterCondicion, setFilterCondicion] = useState("TODAS");
-  const [filterTipo, setFilterTipo] = useState("TODOS");
-  const [filterDocumento, setFilterDocumento] = useState("TODOS");
-  const [filterVencDesde, setFilterVencDesde] = useState("");
-  const [filterVencHasta, setFilterVencHasta] = useState("");
-  const [filterMontoMin, setFilterMontoMin] = useState("");
-  const [filterMontoMax, setFilterMontoMax] = useState("");
-  const [showFilters, setShowFilters] = useState(false);
-  const [sortCol, setSortCol] = useState(null);
-  const [sortDir, setSortDir] = useState("asc");
-  const [lastUpdate, setLastUpdate] = useState(null);
+  const [err, setErr] = useState(null);
 
-  const saveGasUrl = (url) => {
-    setGasUrl(url);
-    try { localStorage?.setItem?.("gas_url", url); } catch {}
-  };
-
-  // ─── FILE PARSING ──────────────────────────────────────────────
-  const handleFile = useCallback((e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setFile(f);
-    setUploadResult(null);
-    setParsedData([]);
-    setParseStats(null);
-
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const data = new Uint8Array(ev.target.result);
-        const wb = XLSX.read(data, { type: "array" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-
-        // Find header row (row with "Cuenta" in col A)
-        let headerIdx = -1;
-        for (let i = 0; i < Math.min(raw.length, 15); i++) {
-          if (raw[i]?.[0]?.toString().toLowerCase().includes("cuenta")) {
-            headerIdx = i;
-            break;
-          }
-        }
-        if (headerIdx === -1) {
-          setUploadResult({ ok: false, msg: "No se encontró la fila de encabezado (Cuenta). ¿Es el formato correcto de Defontana?" });
-          return;
-        }
-
-        const dataRows = raw.slice(headerIdx + 1).filter(r => r.some(c => c !== "" && c != null));
-
-        // Extract in the NEW column order defined by HEADER_KEYS
-        const extracted = dataRows.map(r => {
-          return HEADER_KEYS.map(k => {
-            const val = r[COL_MAP[k]];
-            return val != null ? val.toString() : "";
-          });
-        });
-
-        // Stats — in new order: Condición=0, Proveedor=6
-        const nomina = extracted.filter(r => r[0] === "1NOMINA").length;
-        const contado = extracted.filter(r => r[0] === "2CONTADO").length;
-        const tipos = [...new Set(extracted.map(r => r[10]))].filter(Boolean); // Tipo now at idx 10
-        const proveedores = [...new Set(extracted.map(r => r[6]))].filter(Boolean).length; // Proveedor now at idx 6
-
-        setParsedData(extracted);
-        setParseStats({
-          total: extracted.length,
-          nomina,
-          contado,
-          tipos,
-          proveedores,
-        });
-      } catch (err) {
-        setUploadResult({ ok: false, msg: `Error al leer archivo: ${err.message}` });
-      }
-    };
-    reader.readAsArrayBuffer(f);
-  }, []);
-
-  // ─── UPLOAD TO GOOGLE SHEETS ───────────────────────────────────
-  const handleUpload = useCallback(async () => {
-    if (!parsedData.length) return;
-    if (!gasUrl || gasUrl === "PEGAR_URL_AQUI") {
-      setUploadResult({ ok: false, msg: "Configura la URL del Google Apps Script primero (botón ⚙️)." });
-      return;
-    }
-    setUploading(true);
-    setUploadResult(null);
-
-    try {
-      const BATCH = 500;
-      const total = parsedData.length;
-
-      for (let i = 0; i < total; i += BATCH) {
-        const batch = parsedData.slice(i, i + BATCH);
-        const isFirst = i === 0;
-        const isLast = i + BATCH >= total;
-
-        const res = await fetch(gasUrl, {
-          method: "POST",
-          headers: { "Content-Type": "text/plain;charset=utf-8" },
-          body: JSON.stringify({
-            action: "upload",
-            headers: isFirst ? HEADERS : null,
-            data: batch,
-            clear: isFirst,
-            isLast,
-          }),
-        });
-
-        const text = await res.text();
-        let json;
-        try { json = JSON.parse(text); } catch {
-          throw new Error("Respuesta inválida del servidor: " + text.substring(0, 200));
-        }
-        if (!json.ok) throw new Error(json.error || "Error desconocido");
-      }
-
-      setUploadResult({ ok: true, msg: `${total.toLocaleString("es-CL")} filas cargadas exitosamente al Google Sheet.` });
-    } catch (err) {
-      setUploadResult({ ok: false, msg: `Error: ${err.message}` });
-    } finally {
-      setUploading(false);
-    }
-  }, [parsedData, gasUrl]);
-
-  // ─── FETCH DATA FOR SEARCH ────────────────────────────────────
-  const [fetchError, setFetchError] = useState(null);
-  const fetchData = useCallback(async () => {
-    if (!gasUrl || gasUrl === "PEGAR_URL_AQUI") return;
+  const refresh = useCallback(async () => {
     setLoading(true);
-    setFetchError(null);
+    setErr(null);
     try {
-      const res = await fetch(`${gasUrl}?action=read`, {
-        redirect: "follow",
-        headers: { "Accept": "application/json" },
-      });
-      const text = await res.text();
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        const match = text.match(/\{[\s\S]*\}/);
-        if (match) {
-          json = JSON.parse(match[0]);
-        } else {
-          throw new Error("Respuesta no es JSON. ¿La URL del Apps Script es correcta?");
-        }
-      }
-      if (json.ok) {
-        const normalized = (json.data || []).map(row =>
-          row.map(cell => (cell != null ? cell : ""))
-        );
-        setSearchData(normalized);
-        setLastUpdate(new Date().toLocaleString("es-CL"));
-        setFetchError(null);
-      } else {
-        setFetchError(json.error || "Error desconocido del servidor");
-      }
-    } catch (err) {
-      console.error("Error fetching data:", err);
-      setFetchError(err.message);
+      const r = await loadAll();
+      setDefontana(r.defontana || []);
+      setOc(r.oc || []);
+      setFactcl(r.factcl || []);
+      setReviews(r.reviews || {});
+      setSource(r.source);
+    } catch (e) {
+      setErr(e.message);
     } finally {
       setLoading(false);
     }
-  }, [gasUrl]);
+  }, []);
 
-  useEffect(() => {
-    if (tab === "search") fetchData();
-  }, [tab, fetchData]);
+  useEffect(() => { refresh(); }, [refresh]);
 
-  // ─── FILTERED + SORTED DATA ───────────────────────────────────
-  // New indices: Tipo=10, Documento=2, Vencimiento=4, RUT=5, Proveedor=6, Saldo=9
-  const uniqueTipos = useMemo(() => ["TODOS", ...new Set(searchData.map(r => r[10]).filter(Boolean))], [searchData]);
-  const uniqueDocs  = useMemo(() => ["TODOS", ...new Set(searchData.map(r => r[2]).filter(Boolean))],  [searchData]);
+  // ─── Procesamiento: agrupar + cruzar + aplicar estado de revisión ──
+  const enrichedAll = useMemo(() => {
+    if (!defontana.length) return [];
+    const grouped = groupDefontanaByInvoice(defontana);
+    const crossed = buildCrossref(grouped, oc, factcl);
+    return applyReviewState(crossed, reviews);
+  }, [defontana, oc, factcl, reviews]);
 
-  const filtered = useMemo(() => {
-    const q = searchText.toLowerCase().trim();
-    return searchData.filter(row => {
-      // Text search across: RUT(5), Proveedor(6), NºDoc(3), Número(11), Condición(0), Tipo(10), Documento(2)
-      if (q) {
-        const rut      = String(row[5]  ?? "").toLowerCase();
-        const prov     = String(row[6]  ?? "").toLowerCase();
-        const ndoc     = String(row[3]  ?? "").toLowerCase();
-        const num      = String(row[11] ?? "").toLowerCase();
-        const condicion= String(row[0]  ?? "").toLowerCase();
-        const tipo     = String(row[10] ?? "").toLowerCase();
-        const doc      = String(row[2]  ?? "").toLowerCase();
-        if (!rut.includes(q) && !prov.includes(q) && !ndoc.includes(q) && !num.includes(q)
-            && !condicion.includes(q) && !tipo.includes(q) && !doc.includes(q)) return false;
-      }
-      // Condición
-      if (filterCondicion !== "TODAS") {
-        if (String(row[0]) !== filterCondicion) return false;
-      }
-      // Tipo (idx 10)
-      if (filterTipo !== "TODOS" && String(row[10]) !== filterTipo) return false;
-      // Documento (idx 2)
-      if (filterDocumento !== "TODOS" && String(row[2]) !== filterDocumento) return false;
-      // Vencimiento range (idx 4)
-      if (!isDateInRange(row[4], filterVencDesde, filterVencHasta)) return false;
-      // Monto / Saldo (idx 9)
-      if (filterMontoMin) {
-        const saldo = Math.abs(parseCLP(row[9]));
-        if (saldo < Number(filterMontoMin)) return false;
-      }
-      if (filterMontoMax) {
-        const saldo = Math.abs(parseCLP(row[9]));
-        if (saldo > Number(filterMontoMax)) return false;
-      }
-      return true;
-    });
-  }, [searchData, searchText, filterCondicion, filterTipo, filterDocumento, filterVencDesde, filterVencHasta, filterMontoMin, filterMontoMax]);
+  // Principal: todo lo que no esté OK o REVISADA (es decir PENDIENTE + REVISAR)
+  // La pestaña problemas los filtra aparte, así que aquí mostramos PENDIENTE.
+  const principalRows = useMemo(
+    () => enrichedAll.filter(r => r.estadoRev === "PENDIENTE"),
+    [enrichedAll]
+  );
 
-  const sorted = useMemo(() => {
-    if (sortCol === null) return filtered;
-    const arr = [...filtered];
-    const idx = sortCol;
-    arr.sort((a, b) => {
-      let va = a[idx] || "";
-      let vb = b[idx] || "";
-      if (MONEY_COLS.includes(idx)) {
-        va = parseCLP(va);
-        vb = parseCLP(vb);
-      } else {
-        va = va.toString().toLowerCase();
-        vb = vb.toString().toLowerCase();
-      }
-      if (va < vb) return sortDir === "asc" ? -1 : 1;
-      if (va > vb) return sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
-    return arr;
-  }, [filtered, sortCol, sortDir]);
+  // Problemas: las que están marcadas REVISAR
+  const problemasRows = useMemo(
+    () => enrichedAll.filter(r => r.estadoRev === "REVISAR"),
+    [enrichedAll]
+  );
 
-  const handleSort = (idx) => {
-    if (sortCol === idx) {
-      setSortDir(d => d === "asc" ? "desc" : "asc");
-    } else {
-      setSortCol(idx);
-      setSortDir("asc");
+  const historicoRows = useMemo(
+    () => enrichedAll.filter(r => r.estadoRev === "OK" || r.estadoRev === "REVISADA"),
+    [enrichedAll]
+  );
+
+  const sospechosasCount = useMemo(
+    () => principalRows.filter(r => r.sospechosa).length,
+    [principalRows]
+  );
+
+  const handleMark = useCallback(async (row, estado) => {
+    // Optimistic update
+    setReviews(prev => ({
+      ...prev,
+      [row.key]: { estado, nota: prev[row.key]?.nota || "", updated_at: new Date().toISOString() },
+    }));
+    try {
+      await saveReview(row.key, estado);
+    } catch (e) {
+      // Revert on error
+      console.error(e);
+      setReviews(prev => {
+        const next = { ...prev };
+        delete next[row.key];
+        return next;
+      });
+      alert("Error guardando: " + e.message);
     }
+  }, []);
+
+  const saveGas = () => {
+    setGasUrl(gasUrlInput);
+    setShowConfig(false);
+    refresh();
   };
 
-  // Totals — Cargo=7, Abono=8, Saldo=9
-  const totals = useMemo(() => {
-    let cargo = 0, abono = 0, saldo = 0;
-    filtered.forEach(r => {
-      cargo += parseCLP(r[7]);
-      abono += parseCLP(r[8]);
-      saldo += parseCLP(r[9]);
-    });
-    return { cargo, abono, saldo };
-  }, [filtered]);
+  const tabs = [
+    { id: "carga", label: "Carga", icon: <IconUpload /> },
+    { id: "principal", label: "Principal", icon: <IconSearch />, count: principalRows.length, alert: sospechosasCount },
+    { id: "problemas", label: "Problemas", icon: <IconAlert />, count: problemasRows.length, color: problemasRows.length > 0 ? "#ef4444" : null },
+    { id: "historico", label: "Histórico", icon: <IconRefresh />, count: historicoRows.length },
+  ];
 
-  const clearFilters = () => {
-    setSearchText("");
-    setFilterCondicion("TODAS");
-    setFilterTipo("TODOS");
-    setFilterDocumento("TODOS");
-    setFilterVencDesde("");
-    setFilterVencHasta("");
-    setFilterMontoMin("");
-    setFilterMontoMax("");
-  };
-
-  const hasActiveFilters = searchText || filterCondicion !== "TODAS" || filterTipo !== "TODOS"
-    || filterDocumento !== "TODOS" || filterVencDesde || filterVencHasta || filterMontoMin || filterMontoMax;
-
-  // ─── RENDER ────────────────────────────────────────────────────
   return (
     <div style={{
       minHeight: "100vh",
@@ -455,7 +116,7 @@ export default function App() {
         background: "rgba(15,23,42,0.8)",
         borderBottom: "1px solid rgba(99,102,241,0.2)",
         backdropFilter: "blur(20px)",
-        padding: "16px 24px",
+        padding: "14px 24px",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
@@ -463,20 +124,18 @@ export default function App() {
         top: 0,
         zIndex: 100,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{
             background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-            borderRadius: "10px",
-            padding: "8px",
+            borderRadius: 10,
+            padding: 8,
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
           }}>
             <IconTruck />
           </div>
           <div>
             <div style={{
-              fontSize: "18px",
+              fontSize: 17,
               fontWeight: 700,
               letterSpacing: "-0.02em",
               background: "linear-gradient(135deg, #e2e8f0, #94a3b8)",
@@ -485,42 +144,63 @@ export default function App() {
             }}>
               PROVEEDORES TBELLO
             </div>
-            <div style={{ fontSize: "11px", color: "#64748b", letterSpacing: "0.05em", textTransform: "uppercase" }}>
-              Auditoría de documentos · Defontana
+            <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+              Auditoría de facturas · Defontana × OC × Fact.cl
             </div>
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <div style={{
             display: "flex",
             background: "rgba(30,41,59,0.8)",
-            borderRadius: "10px",
-            padding: "3px",
+            borderRadius: 10,
+            padding: 3,
             border: "1px solid rgba(99,102,241,0.15)",
           }}>
-            {[
-              { id: "upload", label: "Carga", icon: <IconUpload /> },
-              { id: "search", label: "Buscador", icon: <IconSearch /> },
-            ].map(t => (
+            {tabs.map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
                 display: "flex",
                 alignItems: "center",
-                gap: "6px",
-                padding: "8px 16px",
+                gap: 6,
+                padding: "7px 14px",
                 border: "none",
-                borderRadius: "8px",
+                borderRadius: 8,
                 cursor: "pointer",
-                fontSize: "13px",
+                fontSize: 13,
                 fontWeight: 600,
                 fontFamily: "inherit",
                 transition: "all 0.2s",
-                background: tab === t.id ? "linear-gradient(135deg, #6366f1, #7c3aed)" : "transparent",
+                background: tab === t.id
+                  ? "linear-gradient(135deg, #6366f1, #7c3aed)"
+                  : "transparent",
                 color: tab === t.id ? "#fff" : "#94a3b8",
-                boxShadow: tab === t.id ? "0 2px 8px rgba(99,102,241,0.3)" : "none",
               }}>
                 {t.icon}
                 {t.label}
+                {t.count != null && (
+                  <span style={{
+                    background: t.color || "rgba(148,163,184,0.25)",
+                    color: "#fff",
+                    borderRadius: 10,
+                    padding: "1px 7px",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    minWidth: 18,
+                    textAlign: "center",
+                  }}>
+                    {t.count.toLocaleString("es-CL")}
+                  </span>
+                )}
+                {t.alert > 0 && tab !== t.id && (
+                  <span title={`${t.alert} sospechosas`} style={{
+                    background: "#ef4444",
+                    color: "#fff",
+                    borderRadius: "50%",
+                    width: 8,
+                    height: 8,
+                  }} />
+                )}
               </button>
             ))}
           </div>
@@ -528,607 +208,145 @@ export default function App() {
           <button onClick={() => setShowConfig(!showConfig)} style={{
             background: "rgba(30,41,59,0.8)",
             border: "1px solid rgba(99,102,241,0.15)",
-            borderRadius: "8px",
-            padding: "8px",
+            borderRadius: 8,
+            padding: 8,
             cursor: "pointer",
             color: "#94a3b8",
-            fontSize: "16px",
+            fontSize: 14,
+          }}>⚙️</button>
+
+          <button onClick={refresh} title="Refrescar" style={{
+            background: "rgba(30,41,59,0.8)",
+            border: "1px solid rgba(99,102,241,0.15)",
+            borderRadius: 8,
+            padding: 8,
+            cursor: "pointer",
+            color: "#94a3b8",
             display: "flex",
-            alignItems: "center",
           }}>
-            ⚙️
+            <IconRefresh />
           </button>
         </div>
       </div>
 
-      {/* Config Panel */}
+      {/* Banner de fuente + advertencia */}
+      <div style={{
+        padding: "8px 24px",
+        background: source === "gas" ? "rgba(34,197,94,0.06)" : "rgba(245,158,11,0.06)",
+        borderBottom: `1px solid ${source === "gas" ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.15)"}`,
+        fontSize: 11,
+        color: source === "gas" ? "#86efac" : "#fbbf24",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}>
+        <span>
+          {source === "gas" ? "🟢 Sincronizado con Google Sheet" : "🟡 Modo local (navegador) · configura Google Sheet en ⚙️ para sincronizar"}
+        </span>
+        {sospechosasCount > 0 && (
+          <span style={{ color: "#f87171", fontWeight: 600 }}>
+            ⚠️ {sospechosasCount} factura{sospechosasCount === 1 ? "" : "s"} sospechosa{sospechosasCount === 1 ? "" : "s"} (contado con OC asociada)
+          </span>
+        )}
+      </div>
+
+      {/* Config panel */}
       {showConfig && (
         <div style={{
-          margin: "16px 24px 0",
-          padding: "16px 20px",
+          margin: "14px 24px 0",
+          padding: "14px 18px",
           background: "rgba(30,41,59,0.6)",
-          borderRadius: "12px",
+          borderRadius: 12,
           border: "1px solid rgba(99,102,241,0.2)",
         }}>
-          <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "8px", color: "#94a3b8" }}>
-            URL Google Apps Script (Web App)
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "#94a3b8" }}>
+            URL Google Apps Script (Web App) — opcional
           </div>
-          <div style={{ display: "flex", gap: "8px" }}>
+          <div style={{ display: "flex", gap: 8 }}>
             <input
               type="text"
-              value={gasUrl}
-              onChange={e => saveGasUrl(e.target.value)}
+              value={gasUrlInput}
+              onChange={e => setGasUrlInput(e.target.value)}
               placeholder="https://script.google.com/macros/s/.../exec"
               style={{
                 flex: 1,
-                padding: "10px 14px",
+                padding: "10px 12px",
                 background: "rgba(15,23,42,0.8)",
                 border: "1px solid rgba(99,102,241,0.2)",
-                borderRadius: "8px",
+                borderRadius: 8,
                 color: "#e2e8f0",
-                fontSize: "13px",
+                fontSize: 12,
                 fontFamily: "'JetBrains Mono', monospace",
                 outline: "none",
               }}
             />
-            <button onClick={() => setShowConfig(false)} style={{
+            <button onClick={saveGas} style={{
               padding: "10px 16px",
               background: "linear-gradient(135deg, #6366f1, #7c3aed)",
               border: "none",
-              borderRadius: "8px",
+              borderRadius: 8,
               color: "#fff",
               cursor: "pointer",
               fontWeight: 600,
-              fontSize: "13px",
+              fontSize: 13,
               fontFamily: "inherit",
-            }}>
-              Guardar
-            </button>
+            }}>Guardar</button>
+          </div>
+          <div style={{ fontSize: 11, color: "#64748b", marginTop: 6 }}>
+            Si queda vacío, los datos se guardan sólo en este navegador.
           </div>
         </div>
       )}
 
-      <div style={{ padding: "24px", maxWidth: "1400px", margin: "0 auto" }}>
+      {err && (
+        <div style={{
+          margin: "14px 24px 0",
+          padding: "10px 14px",
+          background: "rgba(239,68,68,0.1)",
+          border: "1px solid rgba(239,68,68,0.3)",
+          borderRadius: 10,
+          color: "#f87171",
+          fontSize: 12,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}>
+          <IconAlert /> {err}
+        </div>
+      )}
 
-        {/* ═══ UPLOAD TAB ═══ */}
-        {tab === "upload" && (
-          <div>
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = "#6366f1"; }}
-              onDragLeave={e => { e.currentTarget.style.borderColor = "rgba(99,102,241,0.3)"; }}
-              onDrop={e => {
-                e.preventDefault();
-                e.currentTarget.style.borderColor = "rgba(99,102,241,0.3)";
-                const f = e.dataTransfer.files[0];
-                if (f) {
-                  const dt = new DataTransfer();
-                  dt.items.add(f);
-                  fileInputRef.current.files = dt.files;
-                  handleFile({ target: { files: [f] } });
-                }
-              }}
-              style={{
-                border: "2px dashed rgba(99,102,241,0.3)",
-                borderRadius: "16px",
-                padding: "48px 32px",
-                textAlign: "center",
-                cursor: "pointer",
-                transition: "all 0.3s",
-                background: "rgba(30,41,59,0.3)",
-              }}
-            >
-              <input ref={fileInputRef} type="file" accept=".xlsx,.xls" onChange={handleFile} style={{ display: "none" }} />
-              <div style={{ opacity: 0.5, marginBottom: "16px" }}><IconFile /></div>
-              {file ? (
-                <div>
-                  <div style={{ fontSize: "16px", fontWeight: 600, color: "#a5b4fc" }}>{file.name}</div>
-                  <div style={{ fontSize: "13px", color: "#64748b", marginTop: "4px" }}>
-                    {(file.size / 1024).toFixed(0)} KB · Clic para cambiar archivo
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <div style={{ fontSize: "16px", fontWeight: 600, color: "#94a3b8" }}>
-                    Arrastra el archivo de Defontana aquí
-                  </div>
-                  <div style={{ fontSize: "13px", color: "#64748b", marginTop: "4px" }}>
-                    o haz clic para seleccionar · .xlsx
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Parse Stats */}
-            {parseStats && (
-              <div style={{ marginTop: "20px" }}>
-                <div style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                  gap: "12px",
-                  marginBottom: "20px",
-                }}>
-                  {[
-                    { label: "Total filas",      value: parseStats.total.toLocaleString("es-CL"),      color: "#6366f1" },
-                    { label: "Nómina (crédito)", value: parseStats.nomina.toLocaleString("es-CL"),     color: "#22c55e" },
-                    { label: "Contado",          value: parseStats.contado.toLocaleString("es-CL"),    color: "#f59e0b" },
-                    { label: "Proveedores",      value: parseStats.proveedores.toLocaleString("es-CL"),color: "#ec4899" },
-                  ].map((s, i) => (
-                    <div key={i} style={{
-                      background: "rgba(30,41,59,0.6)",
-                      borderRadius: "12px",
-                      padding: "16px",
-                      border: `1px solid ${s.color}33`,
-                    }}>
-                      <div style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                        {s.label}
-                      </div>
-                      <div style={{ fontSize: "24px", fontWeight: 700, color: s.color, marginTop: "4px" }}>
-                        {s.value}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Preview table */}
-                <div style={{
-                  background: "rgba(30,41,59,0.4)",
-                  borderRadius: "12px",
-                  border: "1px solid rgba(99,102,241,0.15)",
-                  overflow: "hidden",
-                  marginBottom: "20px",
-                }}>
-                  <div style={{
-                    padding: "12px 16px",
-                    borderBottom: "1px solid rgba(99,102,241,0.1)",
-                    fontSize: "13px",
-                    fontWeight: 600,
-                    color: "#94a3b8",
-                  }}>
-                    Vista previa (primeras 10 filas)
-                  </div>
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                      <thead>
-                        <tr>
-                          {HEADERS.map((h, i) => (
-                            <th key={i} style={{
-                              padding: "10px 12px",
-                              textAlign: MONEY_COLS.includes(i) ? "right" : "left",
-                              fontWeight: 600,
-                              color: "#94a3b8",
-                              borderBottom: "1px solid rgba(99,102,241,0.1)",
-                              whiteSpace: "nowrap",
-                              fontSize: "11px",
-                              textTransform: "uppercase",
-                              letterSpacing: "0.04em",
-                            }}>
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {parsedData.slice(0, 10).map((row, ri) => (
-                          <tr key={ri} style={{ background: ri % 2 === 0 ? "transparent" : "rgba(15,23,42,0.3)" }}>
-                            {row.map((cell, ci) => (
-                              <td key={ci} style={{
-                                padding: "8px 12px",
-                                borderBottom: "1px solid rgba(99,102,241,0.05)",
-                                whiteSpace: "nowrap",
-                                color: ci === 0
-                                  ? (cell === "1NOMINA" ? "#22c55e" : "#f59e0b")
-                                  : "#cbd5e1",
-                                fontFamily: MONEY_COLS.includes(ci) ? "'JetBrains Mono', monospace" : "inherit",
-                                fontWeight: MONEY_COLS.includes(ci) ? 500 : 400,
-                                textAlign: MONEY_COLS.includes(ci) ? "right" : "left",
-                              }}>
-                                {MONEY_COLS.includes(ci) ? fmt(cell) : cell}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Upload button */}
-                <button onClick={handleUpload} disabled={uploading} style={{
-                  width: "100%",
-                  padding: "14px",
-                  border: "none",
-                  borderRadius: "12px",
-                  background: uploading
-                    ? "rgba(99,102,241,0.3)"
-                    : "linear-gradient(135deg, #6366f1, #7c3aed)",
-                  color: "#fff",
-                  fontSize: "15px",
-                  fontWeight: 700,
-                  fontFamily: "inherit",
-                  cursor: uploading ? "wait" : "pointer",
-                  boxShadow: uploading ? "none" : "0 4px 15px rgba(99,102,241,0.3)",
-                  transition: "all 0.3s",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "8px",
-                }}>
-                  {uploading ? (
-                    <>
-                      <div style={{
-                        width: "18px", height: "18px",
-                        border: "2px solid rgba(255,255,255,0.3)",
-                        borderTopColor: "#fff",
-                        borderRadius: "50%",
-                        animation: "spin 0.8s linear infinite",
-                      }} />
-                      Enviando al Google Sheet...
-                    </>
-                  ) : (
-                    <>
-                      <IconUpload />
-                      Sobrescribir Google Sheet ({parseStats.total.toLocaleString("es-CL")} filas)
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
-
-            {uploadResult && (
-              <div style={{
-                marginTop: "16px",
-                padding: "14px 18px",
-                borderRadius: "12px",
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
-                background: uploadResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-                border: `1px solid ${uploadResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                color: uploadResult.ok ? "#22c55e" : "#ef4444",
-                fontSize: "14px",
-                fontWeight: 500,
-              }}>
-                {uploadResult.ok ? <IconCheck /> : <IconAlert />}
-                {uploadResult.msg}
-              </div>
-            )}
-          </div>
+      {/* Contenido */}
+      <div style={{ padding: 24, maxWidth: 1600, margin: "0 auto" }}>
+        {tab === "carga" && <CargaTab onDataChanged={refresh} />}
+        {tab === "principal" && (
+          <InvoiceTable rows={principalRows} onMark={handleMark} />
         )}
-
-        {/* ═══ SEARCH TAB ═══ */}
-        {tab === "search" && (
-          <div>
-            {fetchError && (
+        {tab === "problemas" && (
+          <>
+            {problemasRows.length === 0 && (
               <div style={{
-                marginBottom: "16px",
-                padding: "14px 18px",
-                borderRadius: "12px",
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
-                background: "rgba(239,68,68,0.1)",
-                border: "1px solid rgba(239,68,68,0.3)",
-                color: "#f87171",
-                fontSize: "13px",
-              }}>
-                <IconAlert />
-                <div>
-                  <div style={{ fontWeight: 600 }}>Error al cargar datos del Google Sheet</div>
-                  <div style={{ opacity: 0.8, marginTop: "2px" }}>{fetchError}</div>
-                </div>
-              </div>
-            )}
-
-            {/* Search bar */}
-            <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-              <div style={{ flex: 1, position: "relative", display: "flex", alignItems: "center" }}>
-                <div style={{ position: "absolute", left: "14px", color: "#64748b", display: "flex", pointerEvents: "none" }}>
-                  <IconSearch />
-                </div>
-                <input
-                  type="text"
-                  value={searchText}
-                  onChange={e => setSearchText(e.target.value)}
-                  placeholder="Buscar por RUT, proveedor, Nº documento, número..."
-                  style={{
-                    width: "100%",
-                    padding: "12px 14px 12px 42px",
-                    background: "rgba(30,41,59,0.6)",
-                    border: "1px solid rgba(99,102,241,0.2)",
-                    borderRadius: "10px",
-                    color: "#e2e8f0",
-                    fontSize: "14px",
-                    fontFamily: "inherit",
-                    outline: "none",
-                    transition: "border-color 0.2s",
-                  }}
-                  onFocus={e => e.target.style.borderColor = "#6366f1"}
-                  onBlur={e => e.target.style.borderColor = "rgba(99,102,241,0.2)"}
-                />
-              </div>
-              <button onClick={() => setShowFilters(!showFilters)} style={{
-                padding: "12px 16px",
-                background: hasActiveFilters ? "rgba(99,102,241,0.2)" : "rgba(30,41,59,0.6)",
-                border: `1px solid ${hasActiveFilters ? "#6366f1" : "rgba(99,102,241,0.2)"}`,
-                borderRadius: "10px",
-                color: hasActiveFilters ? "#a5b4fc" : "#94a3b8",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                fontSize: "13px",
-                fontWeight: 600,
-                fontFamily: "inherit",
-                whiteSpace: "nowrap",
-              }}>
-                <IconFilter />
-                Filtros
-                {hasActiveFilters && (
-                  <span style={{
-                    background: "#6366f1",
-                    color: "#fff",
-                    borderRadius: "50%",
-                    width: "18px",
-                    height: "18px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: "10px",
-                    fontWeight: 700,
-                  }}>!</span>
-                )}
-              </button>
-              <button onClick={fetchData} disabled={loading} title="Refrescar datos" style={{
-                padding: "12px",
-                background: "rgba(30,41,59,0.6)",
-                border: "1px solid rgba(99,102,241,0.2)",
-                borderRadius: "10px",
-                color: "#94a3b8",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-              }}>
-                <IconRefresh />
-              </button>
-            </div>
-
-            {/* Filters panel */}
-            {showFilters && (
-              <div style={{
-                padding: "16px 20px",
+                padding: "40px",
+                textAlign: "center",
                 background: "rgba(30,41,59,0.4)",
-                borderRadius: "12px",
+                borderRadius: 12,
                 border: "1px solid rgba(99,102,241,0.15)",
-                marginBottom: "16px",
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                gap: "12px",
+                color: "#64748b",
               }}>
-                {/* Condición */}
-                <div>
-                  <label style={labelStyle}>Condición</label>
-                  <select value={filterCondicion} onChange={e => setFilterCondicion(e.target.value)} style={selectStyle}>
-                    <option value="TODAS">Todas</option>
-                    <option value="1NOMINA">1NOMINA (Crédito)</option>
-                    <option value="2CONTADO">2CONTADO</option>
-                  </select>
-                </div>
-                {/* Tipo */}
-                <div>
-                  <label style={labelStyle}>Tipo movimiento</label>
-                  <select value={filterTipo} onChange={e => setFilterTipo(e.target.value)} style={selectStyle}>
-                    {uniqueTipos.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                {/* Documento */}
-                <div>
-                  <label style={labelStyle}>Tipo documento</label>
-                  <select value={filterDocumento} onChange={e => setFilterDocumento(e.target.value)} style={selectStyle}>
-                    {uniqueDocs.map(t => <option key={t} value={t}>{t === "TODOS" ? "Todos" : t}</option>)}
-                  </select>
-                </div>
-                {/* Vencimiento desde */}
-                <div>
-                  <label style={labelStyle}>Vencimiento desde</label>
-                  <input type="date" value={filterVencDesde} onChange={e => setFilterVencDesde(e.target.value)} style={selectStyle} />
-                </div>
-                {/* Vencimiento hasta */}
-                <div>
-                  <label style={labelStyle}>Vencimiento hasta</label>
-                  <input type="date" value={filterVencHasta} onChange={e => setFilterVencHasta(e.target.value)} style={selectStyle} />
-                </div>
-                {/* Monto mín */}
-                <div>
-                  <label style={labelStyle}>Saldo mínimo ($)</label>
-                  <input type="number" value={filterMontoMin} onChange={e => setFilterMontoMin(e.target.value)} placeholder="0" style={selectStyle} />
-                </div>
-                {/* Monto máx */}
-                <div>
-                  <label style={labelStyle}>Saldo máximo ($)</label>
-                  <input type="number" value={filterMontoMax} onChange={e => setFilterMontoMax(e.target.value)} placeholder="Sin límite" style={selectStyle} />
-                </div>
-                {/* Clear */}
-                <div style={{ display: "flex", alignItems: "flex-end" }}>
-                  <button onClick={clearFilters} style={{
-                    padding: "10px 16px",
-                    background: "rgba(239,68,68,0.1)",
-                    border: "1px solid rgba(239,68,68,0.3)",
-                    borderRadius: "8px",
-                    color: "#f87171",
-                    cursor: "pointer",
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    fontFamily: "inherit",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    width: "100%",
-                    justifyContent: "center",
-                  }}>
-                    <IconX /> Limpiar filtros
-                  </button>
-                </div>
+                Sin facturas marcadas para revisar.
               </div>
             )}
-
-            {/* Summary cards */}
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-              gap: "12px",
-              marginBottom: "16px",
-            }}>
-              {[
-                { label: "Resultados",  value: filtered.length.toLocaleString("es-CL"),          color: "#6366f1" },
-                { label: "Total Cargo", value: fmtShort(totals.cargo),                            color: "#ef4444" },
-                { label: "Total Abono", value: fmtShort(totals.abono),                            color: "#22c55e" },
-                { label: "Saldo Neto",  value: fmtShort(totals.saldo),                            color: totals.saldo >= 0 ? "#f59e0b" : "#ec4899" },
-              ].map((s, i) => (
-                <div key={i} style={{
-                  background: "rgba(30,41,59,0.6)",
-                  borderRadius: "12px",
-                  padding: "14px 16px",
-                  border: `1px solid ${s.color}33`,
-                }}>
-                  <div style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    {s.label}
-                  </div>
-                  <div style={{ fontSize: "20px", fontWeight: 700, color: s.color, marginTop: "2px", fontFamily: "'JetBrains Mono', monospace" }}>
-                    {s.value}
-                  </div>
-                </div>
-              ))}
+            {problemasRows.length > 0 && (
+              <InvoiceTable rows={problemasRows} onMark={handleMark} showProblems />
+            )}
+          </>
+        )}
+        {tab === "historico" && (
+          <>
+            <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
+              Facturas ya procesadas (OK o REVISADA). Se ocultan del listado principal.
             </div>
-
-            {/* Info bar */}
-            <div style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              fontSize: "12px",
-              color: "#64748b",
-              marginBottom: "8px",
-              padding: "0 4px",
-            }}>
-              <span>
-                {loading ? "Cargando..." : `${filtered.length.toLocaleString("es-CL")} de ${searchData.length.toLocaleString("es-CL")} registros`}
-              </span>
-              {lastUpdate && <span>Última carga: {lastUpdate}</span>}
-            </div>
-
-            {/* Data table */}
-            <div style={{
-              background: "rgba(30,41,59,0.4)",
-              borderRadius: "12px",
-              border: "1px solid rgba(99,102,241,0.15)",
-              overflow: "hidden",
-            }}>
-              <div style={{ overflowX: "auto", maxHeight: "65vh" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                  <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
-                    <tr>
-                      {HEADERS.map((h, i) => (
-                        <th key={i} onClick={() => handleSort(i)} style={{
-                          padding: "10px 12px",
-                          textAlign: MONEY_COLS.includes(i) ? "right" : "left",
-                          fontWeight: 600,
-                          color: sortCol === i ? "#a5b4fc" : "#94a3b8",
-                          borderBottom: "1px solid rgba(99,102,241,0.15)",
-                          whiteSpace: "nowrap",
-                          fontSize: "11px",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.04em",
-                          cursor: "pointer",
-                          userSelect: "none",
-                          background: "rgba(15,23,42,0.95)",
-                          position: "sticky",
-                          top: 0,
-                        }}>
-                          {h}
-                          {sortCol === i && (
-                            <span style={{ marginLeft: "4px" }}>
-                              {sortDir === "asc" ? "▲" : "▼"}
-                            </span>
-                          )}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sorted.length === 0 ? (
-                      <tr>
-                        <td colSpan={HEADERS.length} style={{
-                          padding: "48px",
-                          textAlign: "center",
-                          color: "#64748b",
-                          fontSize: "14px",
-                        }}>
-                          {searchData.length === 0
-                            ? "Sin datos. Carga un archivo en la pestaña Carga primero."
-                            : "No se encontraron resultados con los filtros actuales."}
-                        </td>
-                      </tr>
-                    ) : (
-                      sorted.slice(0, 500).map((row, ri) => (
-                        <tr key={ri}
-                          style={{
-                            background: ri % 2 === 0 ? "transparent" : "rgba(15,23,42,0.3)",
-                            transition: "background 0.15s",
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.background = "rgba(99,102,241,0.08)"}
-                          onMouseLeave={e => e.currentTarget.style.background = ri % 2 === 0 ? "transparent" : "rgba(15,23,42,0.3)"}
-                        >
-                          {row.map((cell, ci) => {
-                            const isCondicion = ci === 0;
-                            const isMoney    = MONEY_COLS.includes(ci);
-                            const isNeg      = isMoney && Number(parseCLP(cell)) < 0;
-                            return (
-                              <td key={ci} style={{
-                                padding: "8px 12px",
-                                borderBottom: "1px solid rgba(99,102,241,0.05)",
-                                whiteSpace: "nowrap",
-                                color: isCondicion
-                                  ? (cell === "1NOMINA" ? "#22c55e" : "#f59e0b")
-                                  : isNeg ? "#f87171" : isMoney ? "#e2e8f0" : "#cbd5e1",
-                                fontFamily: isMoney ? "'JetBrains Mono', monospace" : "inherit",
-                                fontWeight: isMoney ? 500 : 400,
-                                textAlign: isMoney ? "right" : "left",
-                                fontSize: isCondicion ? "11px" : "12px",
-                              }}>
-                                {isCondicion ? (
-                                  <span style={{
-                                    padding: "2px 8px",
-                                    borderRadius: "4px",
-                                    background: cell === "1NOMINA" ? "rgba(34,197,94,0.12)" : "rgba(245,158,11,0.12)",
-                                    border: `1px solid ${cell === "1NOMINA" ? "rgba(34,197,94,0.25)" : "rgba(245,158,11,0.25)"}`,
-                                    fontWeight: 600,
-                                  }}>
-                                    {cell === "1NOMINA" ? "NÓMINA" : "CONTADO"}
-                                  </span>
-                                ) : isMoney ? fmt(cell) : cell}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {sorted.length > 500 && (
-                <div style={{
-                  padding: "10px 16px",
-                  textAlign: "center",
-                  fontSize: "12px",
-                  color: "#64748b",
-                  borderTop: "1px solid rgba(99,102,241,0.1)",
-                }}>
-                  Mostrando 500 de {sorted.length.toLocaleString("es-CL")} resultados. Usa los filtros para acotar.
-                </div>
-              )}
-            </div>
-          </div>
+            <InvoiceTable rows={historicoRows} onMark={handleMark} />
+          </>
         )}
       </div>
 
@@ -1144,24 +362,3 @@ export default function App() {
     </div>
   );
 }
-
-const labelStyle = {
-  fontSize: "11px",
-  color: "#64748b",
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-  marginBottom: "4px",
-  display: "block",
-};
-
-const selectStyle = {
-  width: "100%",
-  padding: "10px 12px",
-  background: "rgba(15,23,42,0.8)",
-  border: "1px solid rgba(99,102,241,0.2)",
-  borderRadius: "8px",
-  color: "#e2e8f0",
-  fontSize: "13px",
-  fontFamily: "'DM Sans', system-ui, sans-serif",
-  outline: "none",
-};

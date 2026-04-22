@@ -18,7 +18,19 @@ export const fmtShort = (n) => {
 
 export const fmtDate = (s) => {
   if (!s) return "";
-  return String(s);
+  // Acepta Date, string ISO "2026-04-21T04:00:00.000Z", o string dd/MM/yyyy.
+  // Siempre devuelve dd/MM/yyyy (formato Defontana).
+  const pad = (n) => String(n).padStart(2, "0");
+  if (s instanceof Date && !isNaN(s)) {
+    return `${pad(s.getDate())}/${pad(s.getMonth() + 1)}/${s.getFullYear()}`;
+  }
+  const str = String(s).trim();
+  // ISO 8601 o similar con "T"
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    const d = new Date(str);
+    if (!isNaN(d)) return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+  }
+  return str;
 };
 
 export const fmtRut = (r) => {

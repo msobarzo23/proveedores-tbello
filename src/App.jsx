@@ -20,22 +20,34 @@ const COL_MAP = {
   Q: 16, // Número Doc.
 };
 
+// NUEVO ORDEN: CONDICION / FECHA / DOCUMENTO / Nº DOC / VENCIMIENTO / RUT / PROVEEDOR / CARGO / ABONO / SALDO / TIPO / NUMERO
 const HEADERS = [
-  "Condición", "Fecha", "Tipo", "Número", "RUT",
-  "Proveedor", "Cargo", "Abono", "Saldo",
-  "Documento", "Vencimiento", "Nº Doc."
+  "Condición",   // 0
+  "Fecha",       // 1
+  "Documento",   // 2
+  "Nº Doc.",     // 3
+  "Vencimiento", // 4
+  "RUT",         // 5
+  "Proveedor",   // 6
+  "Cargo",       // 7
+  "Abono",       // 8
+  "Saldo",       // 9
+  "Tipo",        // 10
+  "Número",      // 11
 ];
 
-const HEADER_KEYS = ["D","F","G","H","I","J","K","L","M","O","P","Q"];
+// Keys en el mismo nuevo orden (mapean a COL_MAP arriba)
+const HEADER_KEYS = ["D", "F", "O", "Q", "P", "I", "J", "K", "L", "M", "G", "H"];
+
+// Índices de columnas monetarias en el nuevo orden: Cargo=7, Abono=8, Saldo=9
+const MONEY_COLS = [7, 8, 9];
 
 // ─── HELPERS ───────────────────────────────────────────────────────
 
-// Parse Chilean formatted number: "123.855" → 123855, "-7.995.173" → -7995173
 const parseCLP = (v) => {
   if (v == null || v === "") return 0;
   if (typeof v === "number") return v;
   const s = String(v).trim();
-  // Remove dots (thousands separator in CL), keep minus sign
   const cleaned = s.replace(/\./g, "").replace(/,/g, ".");
   const n = Number(cleaned);
   return isNaN(n) ? 0 : n;
@@ -65,11 +77,6 @@ const parseDate = (s) => {
     return new Date(+y, +m - 1, +d);
   }
   return null;
-};
-
-const fmtDate = (s) => {
-  if (!s) return "";
-  return s; // Already dd/mm/yyyy string
 };
 
 const isDateInRange = (dateStr, from, to) => {
@@ -213,6 +220,8 @@ export default function App() {
         }
 
         const dataRows = raw.slice(headerIdx + 1).filter(r => r.some(c => c !== "" && c != null));
+
+        // Extract in the NEW column order defined by HEADER_KEYS
         const extracted = dataRows.map(r => {
           return HEADER_KEYS.map(k => {
             const val = r[COL_MAP[k]];
@@ -220,11 +229,11 @@ export default function App() {
           });
         });
 
-        // Stats
+        // Stats — in new order: Condición=0, Proveedor=6
         const nomina = extracted.filter(r => r[0] === "1NOMINA").length;
         const contado = extracted.filter(r => r[0] === "2CONTADO").length;
-        const tipos = [...new Set(extracted.map(r => r[2]))].filter(Boolean);
-        const proveedores = [...new Set(extracted.map(r => r[5]))].filter(Boolean).length;
+        const tipos = [...new Set(extracted.map(r => r[10]))].filter(Boolean); // Tipo now at idx 10
+        const proveedores = [...new Set(extracted.map(r => r[6]))].filter(Boolean).length; // Proveedor now at idx 6
 
         setParsedData(extracted);
         setParseStats({
@@ -252,10 +261,8 @@ export default function App() {
     setUploadResult(null);
 
     try {
-      // Send in batches of 500 to avoid payload limits
       const BATCH = 500;
       const total = parsedData.length;
-      let sent = 0;
 
       for (let i = 0; i < total; i += BATCH) {
         const batch = parsedData.slice(i, i + BATCH);
@@ -280,7 +287,6 @@ export default function App() {
           throw new Error("Respuesta inválida del servidor: " + text.substring(0, 200));
         }
         if (!json.ok) throw new Error(json.error || "Error desconocido");
-        sent += batch.length;
       }
 
       setUploadResult({ ok: true, msg: `${total.toLocaleString("es-CL")} filas cargadas exitosamente al Google Sheet.` });
@@ -298,7 +304,6 @@ export default function App() {
     setLoading(true);
     setFetchError(null);
     try {
-      // GAS Web Apps redirect (302) — fetch follows it automatically
       const res = await fetch(`${gasUrl}?action=read`, {
         redirect: "follow",
         headers: { "Accept": "application/json" },
@@ -308,7 +313,6 @@ export default function App() {
       try {
         json = JSON.parse(text);
       } catch {
-        // Sometimes GAS returns HTML on first redirect, try extracting JSON
         const match = text.match(/\{[\s\S]*\}/);
         if (match) {
           json = JSON.parse(match[0]);
@@ -317,7 +321,6 @@ export default function App() {
         }
       }
       if (json.ok) {
-        // Normalize data: GAS may return numbers where we expect strings
         const normalized = (json.data || []).map(row =>
           row.map(cell => (cell != null ? cell : ""))
         );
@@ -340,42 +343,42 @@ export default function App() {
   }, [tab, fetchData]);
 
   // ─── FILTERED + SORTED DATA ───────────────────────────────────
-  const uniqueTipos = useMemo(() => ["TODOS", ...new Set(searchData.map(r => r[2]).filter(Boolean))], [searchData]);
-  const uniqueDocs = useMemo(() => ["TODOS", ...new Set(searchData.map(r => r[9]).filter(Boolean))], [searchData]);
+  // New indices: Tipo=10, Documento=2, Vencimiento=4, RUT=5, Proveedor=6, Saldo=9
+  const uniqueTipos = useMemo(() => ["TODOS", ...new Set(searchData.map(r => r[10]).filter(Boolean))], [searchData]);
+  const uniqueDocs  = useMemo(() => ["TODOS", ...new Set(searchData.map(r => r[2]).filter(Boolean))],  [searchData]);
 
   const filtered = useMemo(() => {
     const q = searchText.toLowerCase().trim();
     return searchData.filter(row => {
-      // Text search: RUT (4), Proveedor (5), Nº Doc (11), Número (3)
-      // All values converted to string - GAS returns numbers as numbers
+      // Text search across: RUT(5), Proveedor(6), NºDoc(3), Número(11), Condición(0), Tipo(10), Documento(2)
       if (q) {
-        const rut = String(row[4] ?? "").toLowerCase();
-        const prov = String(row[5] ?? "").toLowerCase();
-        const ndoc = String(row[11] ?? "").toLowerCase();
-        const num = String(row[3] ?? "").toLowerCase();
-        const condicion = String(row[0] ?? "").toLowerCase();
-        const tipo = String(row[2] ?? "").toLowerCase();
-        const doc = String(row[9] ?? "").toLowerCase();
-        if (!rut.includes(q) && !prov.includes(q) && !ndoc.includes(q) && !num.includes(q) 
+        const rut      = String(row[5]  ?? "").toLowerCase();
+        const prov     = String(row[6]  ?? "").toLowerCase();
+        const ndoc     = String(row[3]  ?? "").toLowerCase();
+        const num      = String(row[11] ?? "").toLowerCase();
+        const condicion= String(row[0]  ?? "").toLowerCase();
+        const tipo     = String(row[10] ?? "").toLowerCase();
+        const doc      = String(row[2]  ?? "").toLowerCase();
+        if (!rut.includes(q) && !prov.includes(q) && !ndoc.includes(q) && !num.includes(q)
             && !condicion.includes(q) && !tipo.includes(q) && !doc.includes(q)) return false;
       }
       // Condición
       if (filterCondicion !== "TODAS") {
         if (String(row[0]) !== filterCondicion) return false;
       }
-      // Tipo
-      if (filterTipo !== "TODOS" && String(row[2]) !== filterTipo) return false;
-      // Documento
-      if (filterDocumento !== "TODOS" && String(row[9]) !== filterDocumento) return false;
-      // Vencimiento range
-      if (!isDateInRange(row[10], filterVencDesde, filterVencHasta)) return false;
-      // Monto (saldo col index 8)
+      // Tipo (idx 10)
+      if (filterTipo !== "TODOS" && String(row[10]) !== filterTipo) return false;
+      // Documento (idx 2)
+      if (filterDocumento !== "TODOS" && String(row[2]) !== filterDocumento) return false;
+      // Vencimiento range (idx 4)
+      if (!isDateInRange(row[4], filterVencDesde, filterVencHasta)) return false;
+      // Monto / Saldo (idx 9)
       if (filterMontoMin) {
-        const saldo = Math.abs(parseCLP(row[8]));
+        const saldo = Math.abs(parseCLP(row[9]));
         if (saldo < Number(filterMontoMin)) return false;
       }
       if (filterMontoMax) {
-        const saldo = Math.abs(parseCLP(row[8]));
+        const saldo = Math.abs(parseCLP(row[9]));
         if (saldo > Number(filterMontoMax)) return false;
       }
       return true;
@@ -386,11 +389,10 @@ export default function App() {
     if (sortCol === null) return filtered;
     const arr = [...filtered];
     const idx = sortCol;
-    const moneyIdx = [6, 7, 8]; // Cargo, Abono, Saldo
     arr.sort((a, b) => {
       let va = a[idx] || "";
       let vb = b[idx] || "";
-      if (moneyIdx.includes(idx)) {
+      if (MONEY_COLS.includes(idx)) {
         va = parseCLP(va);
         vb = parseCLP(vb);
       } else {
@@ -413,13 +415,13 @@ export default function App() {
     }
   };
 
-  // Totals
+  // Totals — Cargo=7, Abono=8, Saldo=9
   const totals = useMemo(() => {
     let cargo = 0, abono = 0, saldo = 0;
     filtered.forEach(r => {
-      cargo += parseCLP(r[6]);
-      abono += parseCLP(r[7]);
-      saldo += parseCLP(r[8]);
+      cargo += parseCLP(r[7]);
+      abono += parseCLP(r[8]);
+      saldo += parseCLP(r[9]);
     });
     return { cargo, abono, saldo };
   }, [filtered]);
@@ -435,7 +437,8 @@ export default function App() {
     setFilterMontoMax("");
   };
 
-  const hasActiveFilters = searchText || filterCondicion !== "TODAS" || filterTipo !== "TODOS" || filterDocumento !== "TODOS" || filterVencDesde || filterVencHasta || filterMontoMin || filterMontoMax;
+  const hasActiveFilters = searchText || filterCondicion !== "TODAS" || filterTipo !== "TODOS"
+    || filterDocumento !== "TODOS" || filterVencDesde || filterVencHasta || filterMontoMin || filterMontoMax;
 
   // ─── RENDER ────────────────────────────────────────────────────
   return (
@@ -489,7 +492,6 @@ export default function App() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          {/* Tabs */}
           <div style={{
             display: "flex",
             background: "rgba(30,41,59,0.8)",
@@ -523,7 +525,6 @@ export default function App() {
             ))}
           </div>
 
-          {/* Config button */}
           <button onClick={() => setShowConfig(!showConfig)} style={{
             background: "rgba(30,41,59,0.8)",
             border: "1px solid rgba(99,102,241,0.15)",
@@ -592,7 +593,6 @@ export default function App() {
         {/* ═══ UPLOAD TAB ═══ */}
         {tab === "upload" && (
           <div>
-            {/* Drop zone */}
             <div
               onClick={() => fileInputRef.current?.click()}
               onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = "#6366f1"; }}
@@ -649,10 +649,10 @@ export default function App() {
                   marginBottom: "20px",
                 }}>
                   {[
-                    { label: "Total filas", value: parseStats.total.toLocaleString("es-CL"), color: "#6366f1" },
-                    { label: "Nómina (crédito)", value: parseStats.nomina.toLocaleString("es-CL"), color: "#22c55e" },
-                    { label: "Contado", value: parseStats.contado.toLocaleString("es-CL"), color: "#f59e0b" },
-                    { label: "Proveedores", value: parseStats.proveedores.toLocaleString("es-CL"), color: "#ec4899" },
+                    { label: "Total filas",      value: parseStats.total.toLocaleString("es-CL"),      color: "#6366f1" },
+                    { label: "Nómina (crédito)", value: parseStats.nomina.toLocaleString("es-CL"),     color: "#22c55e" },
+                    { label: "Contado",          value: parseStats.contado.toLocaleString("es-CL"),    color: "#f59e0b" },
+                    { label: "Proveedores",      value: parseStats.proveedores.toLocaleString("es-CL"),color: "#ec4899" },
                   ].map((s, i) => (
                     <div key={i} style={{
                       background: "rgba(30,41,59,0.6)",
@@ -694,7 +694,7 @@ export default function App() {
                           {HEADERS.map((h, i) => (
                             <th key={i} style={{
                               padding: "10px 12px",
-                              textAlign: "left",
+                              textAlign: MONEY_COLS.includes(i) ? "right" : "left",
                               fontWeight: 600,
                               color: "#94a3b8",
                               borderBottom: "1px solid rgba(99,102,241,0.1)",
@@ -716,12 +716,14 @@ export default function App() {
                                 padding: "8px 12px",
                                 borderBottom: "1px solid rgba(99,102,241,0.05)",
                                 whiteSpace: "nowrap",
-                                color: ci === 0 ? (cell === "1NOMINA" ? "#22c55e" : "#f59e0b") : "#cbd5e1",
-                                fontFamily: [6, 7, 8].includes(ci) ? "'JetBrains Mono', monospace" : "inherit",
-                                fontWeight: [6, 7, 8].includes(ci) ? 500 : 400,
-                                textAlign: [6, 7, 8].includes(ci) ? "right" : "left",
+                                color: ci === 0
+                                  ? (cell === "1NOMINA" ? "#22c55e" : "#f59e0b")
+                                  : "#cbd5e1",
+                                fontFamily: MONEY_COLS.includes(ci) ? "'JetBrains Mono', monospace" : "inherit",
+                                fontWeight: MONEY_COLS.includes(ci) ? 500 : 400,
+                                textAlign: MONEY_COLS.includes(ci) ? "right" : "left",
                               }}>
-                                {[6, 7, 8].includes(ci) ? fmt(cell) : cell}
+                                {MONEY_COLS.includes(ci) ? fmt(cell) : cell}
                               </td>
                             ))}
                           </tr>
@@ -773,7 +775,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Result message */}
             {uploadResult && (
               <div style={{
                 marginTop: "16px",
@@ -798,7 +799,6 @@ export default function App() {
         {/* ═══ SEARCH TAB ═══ */}
         {tab === "search" && (
           <div>
-            {/* Fetch error */}
             {fetchError && (
               <div style={{
                 marginBottom: "16px",
@@ -819,21 +819,11 @@ export default function App() {
                 </div>
               </div>
             )}
+
             {/* Search bar */}
             <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-              <div style={{
-                flex: 1,
-                position: "relative",
-                display: "flex",
-                alignItems: "center",
-              }}>
-                <div style={{
-                  position: "absolute",
-                  left: "14px",
-                  color: "#64748b",
-                  display: "flex",
-                  pointerEvents: "none",
-                }}>
+              <div style={{ flex: 1, position: "relative", display: "flex", alignItems: "center" }}>
+                <div style={{ position: "absolute", left: "14px", color: "#64748b", display: "flex", pointerEvents: "none" }}>
                   <IconSearch />
                 </div>
                 <input
@@ -917,9 +907,7 @@ export default function App() {
               }}>
                 {/* Condición */}
                 <div>
-                  <label style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px", display: "block" }}>
-                    Condición
-                  </label>
+                  <label style={labelStyle}>Condición</label>
                   <select value={filterCondicion} onChange={e => setFilterCondicion(e.target.value)} style={selectStyle}>
                     <option value="TODAS">Todas</option>
                     <option value="1NOMINA">1NOMINA (Crédito)</option>
@@ -928,48 +916,36 @@ export default function App() {
                 </div>
                 {/* Tipo */}
                 <div>
-                  <label style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px", display: "block" }}>
-                    Tipo movimiento
-                  </label>
+                  <label style={labelStyle}>Tipo movimiento</label>
                   <select value={filterTipo} onChange={e => setFilterTipo(e.target.value)} style={selectStyle}>
                     {uniqueTipos.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
                 {/* Documento */}
                 <div>
-                  <label style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px", display: "block" }}>
-                    Tipo documento
-                  </label>
+                  <label style={labelStyle}>Tipo documento</label>
                   <select value={filterDocumento} onChange={e => setFilterDocumento(e.target.value)} style={selectStyle}>
                     {uniqueDocs.map(t => <option key={t} value={t}>{t === "TODOS" ? "Todos" : t}</option>)}
                   </select>
                 </div>
                 {/* Vencimiento desde */}
                 <div>
-                  <label style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px", display: "block" }}>
-                    Vencimiento desde
-                  </label>
+                  <label style={labelStyle}>Vencimiento desde</label>
                   <input type="date" value={filterVencDesde} onChange={e => setFilterVencDesde(e.target.value)} style={selectStyle} />
                 </div>
                 {/* Vencimiento hasta */}
                 <div>
-                  <label style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px", display: "block" }}>
-                    Vencimiento hasta
-                  </label>
+                  <label style={labelStyle}>Vencimiento hasta</label>
                   <input type="date" value={filterVencHasta} onChange={e => setFilterVencHasta(e.target.value)} style={selectStyle} />
                 </div>
                 {/* Monto mín */}
                 <div>
-                  <label style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px", display: "block" }}>
-                    Saldo mínimo ($)
-                  </label>
+                  <label style={labelStyle}>Saldo mínimo ($)</label>
                   <input type="number" value={filterMontoMin} onChange={e => setFilterMontoMin(e.target.value)} placeholder="0" style={selectStyle} />
                 </div>
                 {/* Monto máx */}
                 <div>
-                  <label style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px", display: "block" }}>
-                    Saldo máximo ($)
-                  </label>
+                  <label style={labelStyle}>Saldo máximo ($)</label>
                   <input type="number" value={filterMontoMax} onChange={e => setFilterMontoMax(e.target.value)} placeholder="Sin límite" style={selectStyle} />
                 </div>
                 {/* Clear */}
@@ -1004,10 +980,10 @@ export default function App() {
               marginBottom: "16px",
             }}>
               {[
-                { label: "Resultados", value: filtered.length.toLocaleString("es-CL"), color: "#6366f1" },
-                { label: "Total Cargo", value: fmtShort(totals.cargo), color: "#ef4444" },
-                { label: "Total Abono", value: fmtShort(totals.abono), color: "#22c55e" },
-                { label: "Saldo Neto", value: fmtShort(totals.saldo), color: totals.saldo >= 0 ? "#f59e0b" : "#ec4899" },
+                { label: "Resultados",  value: filtered.length.toLocaleString("es-CL"),          color: "#6366f1" },
+                { label: "Total Cargo", value: fmtShort(totals.cargo),                            color: "#ef4444" },
+                { label: "Total Abono", value: fmtShort(totals.abono),                            color: "#22c55e" },
+                { label: "Saldo Neto",  value: fmtShort(totals.saldo),                            color: totals.saldo >= 0 ? "#f59e0b" : "#ec4899" },
               ].map((s, i) => (
                 <div key={i} style={{
                   background: "rgba(30,41,59,0.6)",
@@ -1055,7 +1031,7 @@ export default function App() {
                       {HEADERS.map((h, i) => (
                         <th key={i} onClick={() => handleSort(i)} style={{
                           padding: "10px 12px",
-                          textAlign: [6, 7, 8].includes(i) ? "right" : "left",
+                          textAlign: MONEY_COLS.includes(i) ? "right" : "left",
                           fontWeight: 600,
                           color: sortCol === i ? "#a5b4fc" : "#94a3b8",
                           borderBottom: "1px solid rgba(99,102,241,0.15)",
@@ -1095,17 +1071,18 @@ export default function App() {
                       </tr>
                     ) : (
                       sorted.slice(0, 500).map((row, ri) => (
-                        <tr key={ri} style={{
-                          background: ri % 2 === 0 ? "transparent" : "rgba(15,23,42,0.3)",
-                          transition: "background 0.15s",
-                        }}
-                        onMouseEnter={e => e.currentTarget.style.background = "rgba(99,102,241,0.08)"}
-                        onMouseLeave={e => e.currentTarget.style.background = ri % 2 === 0 ? "transparent" : "rgba(15,23,42,0.3)"}
+                        <tr key={ri}
+                          style={{
+                            background: ri % 2 === 0 ? "transparent" : "rgba(15,23,42,0.3)",
+                            transition: "background 0.15s",
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = "rgba(99,102,241,0.08)"}
+                          onMouseLeave={e => e.currentTarget.style.background = ri % 2 === 0 ? "transparent" : "rgba(15,23,42,0.3)"}
                         >
                           {row.map((cell, ci) => {
                             const isCondicion = ci === 0;
-                            const isMoney = [6, 7, 8].includes(ci);
-                            const isNeg = isMoney && Number(cell) < 0;
+                            const isMoney    = MONEY_COLS.includes(ci);
+                            const isNeg      = isMoney && Number(parseCLP(cell)) < 0;
                             return (
                               <td key={ci} style={{
                                 padding: "8px 12px",
@@ -1155,11 +1132,8 @@ export default function App() {
         )}
       </div>
 
-      {/* Spinner animation */}
       <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: rgba(15,23,42,0.5); }
@@ -1170,6 +1144,15 @@ export default function App() {
     </div>
   );
 }
+
+const labelStyle = {
+  fontSize: "11px",
+  color: "#64748b",
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+  marginBottom: "4px",
+  display: "block",
+};
 
 const selectStyle = {
   width: "100%",

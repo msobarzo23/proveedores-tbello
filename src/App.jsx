@@ -5,6 +5,7 @@ import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./com
 import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState } from "./lib/crossref";
+import { loadHistoricoCredito } from "./lib/historico";
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -15,6 +16,8 @@ export default function App() {
   const [oc, setOc] = useState([]);
   const [factcl, setFactcl] = useState([]);
   const [reviews, setReviews] = useState({});
+  const [historicoCredito, setHistoricoCredito] = useState(new Set());
+  const [historicoCount, setHistoricoCount] = useState(0);
   const [source, setSource] = useState("local");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -23,12 +26,14 @@ export default function App() {
     setLoading(true);
     setErr(null);
     try {
-      const r = await loadAll();
+      const [r, h] = await Promise.all([loadAll(), loadHistoricoCredito()]);
       setDefontana(r.defontana || []);
       setOc(r.oc || []);
       setFactcl(r.factcl || []);
       setReviews(r.reviews || {});
       setSource(r.source);
+      setHistoricoCredito(h.set);
+      setHistoricoCount(h.count);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -42,9 +47,9 @@ export default function App() {
   const enrichedAll = useMemo(() => {
     if (!defontana.length) return [];
     const grouped = groupDefontanaByInvoice(defontana);
-    const crossed = buildCrossref(grouped, oc, factcl);
+    const crossed = buildCrossref(grouped, oc, factcl, historicoCredito);
     return applyReviewState(crossed, reviews);
-  }, [defontana, oc, factcl, reviews]);
+  }, [defontana, oc, factcl, reviews, historicoCredito]);
 
   // Principal: todo lo que no esté OK o REVISADA (es decir PENDIENTE + REVISAR)
   // La pestaña problemas los filtra aparte, así que aquí mostramos PENDIENTE.
@@ -249,6 +254,11 @@ export default function App() {
       }}>
         <span>
           {source === "gas" ? "🟢 Sincronizado con Google Sheet" : "🟡 Modo local (navegador) · configura Google Sheet en ⚙️ para sincronizar"}
+          {historicoCount > 0 && (
+            <span style={{ marginLeft: 12, color: "#94a3b8" }}>
+              · Histórico crédito: {historicoCount.toLocaleString("es-CL")} proveedores
+            </span>
+          )}
         </span>
         {sospechosasCount > 0 && (
           <span style={{ color: "#f87171", fontWeight: 600 }}>

@@ -59,6 +59,15 @@ function jsonOut(obj) {
 
 function loadAll_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Formatear Date objects como "dd/MM/yyyy" para mantener el formato
+  // original de Defontana/OC/Fact.cl (Sheets los auto-convierte al guardar).
+  const fmtDate = (d) => {
+    if (!(d instanceof Date)) return d;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+  };
+
   const readSheet = (name) => {
     const sh = ss.getSheetByName(name);
     if (!sh) return [];
@@ -67,7 +76,9 @@ function loadAll_() {
     const headers = values[0];
     return values.slice(1).map(row => {
       const o = {};
-      headers.forEach((h, i) => o[h] = row[i]);
+      headers.forEach((h, i) => {
+        o[h] = row[i] instanceof Date ? fmtDate(row[i]) : row[i];
+      });
       return o;
     });
   };

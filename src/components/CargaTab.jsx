@@ -29,7 +29,11 @@ export default function CargaTab({ onDataChanged }) {
       }
       const out = await Promise.all(tasks);
       const msgs = out.map(([name, r]) => `${name}: ${r.count} filas (${r.source})`).join(" · ");
-      setResult({ ok: true, msg: msgs });
+      const warns = out.map(([n, r]) => r.warning ? `${n}: ${r.warning}` : null).filter(Boolean);
+      setResult({
+        ok: true,
+        msg: msgs + (warns.length ? ` · ⚠️ ${warns.join(", ")}` : ""),
+      });
       setStamps(getTimestamps());
       onDataChanged?.();
     } catch (e) {

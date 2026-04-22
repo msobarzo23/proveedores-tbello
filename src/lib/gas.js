@@ -1,7 +1,12 @@
 // Cliente del Google Apps Script. Si no hay URL configurada, persiste en localStorage.
 
+// URL por defecto del Web App. Si el usuario guarda otra en ⚙️ en su
+// navegador, esa toma precedencia (permite cambiar de hoja sin redeployar).
+export const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbyAe6b-Flbg5vpHoM27696ZPCqRJpB-DGHrJWPzurEQD2NZalWCN7hC_rGOmry7k32Y/exec";
+
 const LS_KEYS = {
   URL: "gas_url",
+  URL_VERSION: "gas_url_version",
   DEFONTANA: "data_defontana",
   OC: "data_oc",
   FACTCL: "data_factcl",
@@ -9,12 +14,30 @@ const LS_KEYS = {
   TIMESTAMPS: "data_timestamps",
 };
 
+// Bump cuando la URL por defecto cambie o haya que forzar limpieza de URLs viejas.
+const URL_VERSION = "2";
+
 export const getGasUrl = () => {
-  try { return localStorage.getItem(LS_KEYS.URL) || ""; } catch { return ""; }
+  try {
+    // Migración: si la versión guardada no es la actual, descartar la URL guardada.
+    if (localStorage.getItem(LS_KEYS.URL_VERSION) !== URL_VERSION) {
+      localStorage.removeItem(LS_KEYS.URL);
+      localStorage.setItem(LS_KEYS.URL_VERSION, URL_VERSION);
+    }
+    const stored = localStorage.getItem(LS_KEYS.URL);
+    return stored ? stored : DEFAULT_GAS_URL;
+  } catch { return DEFAULT_GAS_URL; }
 };
 
 export const setGasUrl = (url) => {
-  try { localStorage.setItem(LS_KEYS.URL, url); } catch {}
+  try {
+    if (!url || url === DEFAULT_GAS_URL) localStorage.removeItem(LS_KEYS.URL);
+    else localStorage.setItem(LS_KEYS.URL, url);
+  } catch {}
+};
+
+export const resetGasUrl = () => {
+  try { localStorage.removeItem(LS_KEYS.URL); } catch {}
 };
 
 // ─── LOCAL STORAGE FALLBACK ──────────────────────────────────────
@@ -37,29 +60,22 @@ const stampSave = (dataset) => {
 export const getTimestamps = () => lsGet(LS_KEYS.TIMESTAMPS, {}) || {};
 
 // ─── SAVE DATASETS ───────────────────────────────────────────────
-export async function saveDefontana(rows) {
-  lsSet(LS_KEYS.DEFONTANA, rows);
-  stampSave("defontana");
+async function saveWithFallback(key, dataset, rows) {
+  lsSet(key, rows);
+  stampSave(dataset);
   const url = getGasUrl();
   if (!url) return { ok: true, source: "local", count: rows.length };
-  return postDataset(url, "defontana", rows);
+  try {
+    return await postDataset(url, dataset, rows);
+  } catch (e) {
+    console.warn(`[${dataset}] GAS falló, guardado solo en local:`, e.message);
+    return { ok: true, source: "local", count: rows.length, warning: e.message };
+  }
 }
 
-export async function saveOC(rows) {
-  lsSet(LS_KEYS.OC, rows);
-  stampSave("oc");
-  const url = getGasUrl();
-  if (!url) return { ok: true, source: "local", count: rows.length };
-  return postDataset(url, "oc", rows);
-}
-
-export async function saveFactCL(rows) {
-  lsSet(LS_KEYS.FACTCL, rows);
-  stampSave("factcl");
-  const url = getGasUrl();
-  if (!url) return { ok: true, source: "local", count: rows.length };
-  return postDataset(url, "factcl", rows);
-}
+export const saveDefontana = (rows) => saveWithFallback(LS_KEYS.DEFONTANA, "defontana", rows);
+export const saveOC        = (rows) => saveWithFallback(LS_KEYS.OC, "oc", rows);
+export const saveFactCL    = (rows) => saveWithFallback(LS_KEYS.FACTCL, "factcl", rows);
 
 async function postDataset(url, dataset, rows) {
   const BATCH = 500;

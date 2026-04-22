@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { fmtCLP, fmtRut, STATE_COLORS } from "../lib/ui";
+import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 
 export default function InvoiceTable({ rows, onMark, showProblems = false }) {
@@ -215,7 +215,7 @@ function InvoiceRow({ row, onMark, showProblems }) {
           {row.condicion === "1NOMINA" ? "NOM" : row.condicion === "2CONTADO" ? "CTD" : "-"}
         </span>
       </td>
-      <td style={tdStyle}>{row.fechaFactura}</td>
+      <td style={tdStyle}>{fmtDate(row.fechaFactura)}</td>
       <td style={{ ...tdStyle, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>
         {row.tipoDoc.replace("Electrónica", "Elec.").replace("Factura", "Fact.")}
       </td>

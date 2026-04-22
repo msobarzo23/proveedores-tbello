@@ -1,16 +1,16 @@
 // Motor de cruce:
 // Defontana (agrupado por factura) → Facturación.cl (por RUT+Folio) → N Referencia = OC
 //                                                                       → Reporte OC (por Nro)
+//                                → Histórico crédito (por RUT)
 //
 // Regla de alerta (línea roja):
 //   Si la factura Defontana tiene condición 2CONTADO
-//   Y tiene una referencia a OC en Fact.cl
-//   Y esa OC existe en el Reporte OC
+//   Y (tiene una referencia a OC válida  ó  el RUT está en el histórico de crédito)
 //   → SOSPECHOSA (debería estar como 1NOMINA).
-//
-// Si no hay referencia a OC (Sin referencia) o la OC no está en el Reporte OC → se ignora.
 
-export function buildCrossref(defontanaInvoices, ocRows, factclRows) {
+import { normalizeRut } from "./historico";
+
+export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCreditoSet = new Set()) {
   // Indexar Reporte OC por Nro
   const ocByNro = new Map();
   for (const oc of ocRows) {
@@ -50,7 +50,17 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows) {
 
     const tieneRefOC = !!ocLinked;
     const isContado = inv.condicion === "2CONTADO";
-    const sospechosa = tieneRefOC && isContado;
+    const enHistoricoCredito = historicoCreditoSet.has(normalizeRut(inv.rut));
+    const sospechosa = isContado && (tieneRefOC || enHistoricoCredito);
+
+    let alerta = "";
+    if (sospechosa) {
+      if (tieneRefOC) {
+        alerta = `Ingresada al CONTADO pero tiene OC ${nRef} (${ocLinked.formapago || "crédito"}) — debería ser NÓMINA`;
+      } else {
+        alerta = `Ingresada al CONTADO pero el proveedor aparece en el histórico de crédito — debería ser NÓMINA`;
+      }
+    }
 
     return {
       ...inv,
@@ -63,11 +73,9 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows) {
       ocCreadaPor: ocLinked?.creadaPor || "",
       ocSucursal: ocLinked?.sucursal || "",
       tieneRefOC,
+      enHistoricoCredito,
       sospechosa,
-      // alerta textual
-      alerta: sospechosa
-        ? `Ingresada al CONTADO pero tiene OC ${nRef} (${ocLinked.formapago || "crédito"}) — debería ser NÓMINA`
-        : "",
+      alerta,
     };
   });
 }

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
 import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./components/Icons";
-import { loadAll, saveReview, getGasUrl, setGasUrl } from "./lib/gas";
+import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState } from "./lib/crossref";
 
@@ -91,6 +91,13 @@ export default function App() {
 
   const saveGas = () => {
     setGasUrl(gasUrlInput);
+    setShowConfig(false);
+    refresh();
+  };
+
+  const resetGas = () => {
+    resetGasUrl();
+    setGasUrlInput(DEFAULT_GAS_URL);
     setShowConfig(false);
     refresh();
   };
@@ -291,9 +298,20 @@ export default function App() {
               fontSize: 13,
               fontFamily: "inherit",
             }}>Guardar</button>
+            <button onClick={resetGas} title="Volver a la URL por defecto" style={{
+              padding: "10px 14px",
+              background: "rgba(148,163,184,0.15)",
+              border: "1px solid rgba(148,163,184,0.25)",
+              borderRadius: 8,
+              color: "#cbd5e1",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 12,
+              fontFamily: "inherit",
+            }}>Usar default</button>
           </div>
           <div style={{ fontSize: 11, color: "#64748b", marginTop: 6 }}>
-            Si queda vacío, los datos se guardan sólo en este navegador.
+            Si queda vacío, se usa la URL por defecto (Sheet compartido del equipo).
           </div>
         </div>
       )}

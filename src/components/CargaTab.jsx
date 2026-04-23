@@ -35,7 +35,7 @@ export default function CargaTab({ onDataChanged }) {
         msg: msgs + (warns.length ? ` · ⚠️ ${warns.join(", ")}` : ""),
       });
       setStamps(getTimestamps());
-      onDataChanged?.();
+      onDataChanged?.(!!pending.defontana);
     } catch (e) {
       setResult({ ok: false, msg: e.message });
     } finally {

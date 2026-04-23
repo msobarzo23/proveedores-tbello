@@ -22,15 +22,38 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (conConciliacion = false) => {
     setLoading(true);
     setErr(null);
     try {
       const [r, h] = await Promise.all([loadAll(), loadHistoricoCredito()]);
+
+      let updatedReviews = r.reviews || {};
+
+      // Auto-conciliar: facturas en REVISAR que ya no están en el nuevo Defontana
+      // se marcan REVISADA con nota "Conciliado". Solo corre al subir Defontana.
+      if (conConciliacion && r.defontana && r.defontana.length > 0) {
+        const keysNuevos = new Set(groupDefontanaByInvoice(r.defontana).map(inv => inv.key));
+        const autoConciliadas = [];
+        updatedReviews = { ...updatedReviews };
+        for (const [key, rev] of Object.entries(updatedReviews)) {
+          if (rev.estado === "REVISAR" && !keysNuevos.has(key)) {
+            const notaPrevia = rev.nota || "";
+            const nuevaNota = notaPrevia ? `${notaPrevia} · Conciliado` : "Conciliado";
+            updatedReviews[key] = { estado: "REVISADA", nota: nuevaNota, updated_at: new Date().toISOString() };
+            autoConciliadas.push({ key, nota: nuevaNota });
+          }
+        }
+        if (autoConciliadas.length > 0) {
+          Promise.all(autoConciliadas.map(({ key, nota }) => saveReview(key, "REVISADA", nota)))
+            .catch(e => console.warn("Error guardando auto-conciliación:", e));
+        }
+      }
+
       setDefontana(r.defontana || []);
       setOc(r.oc || []);
       setFactcl(r.factcl || []);
-      setReviews(r.reviews || {});
+      setReviews(updatedReviews);
       setSource(r.source);
       setHistoricoCredito(h.set);
       setHistoricoCount(h.count);

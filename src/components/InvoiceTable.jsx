@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 
-export default function InvoiceTable({ rows, onMark, onNote, showProblems = false }) {
+export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showNotes = false }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
@@ -64,7 +64,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
     ["nReferencia", "OC"],
     ["ocFormapago", "Forma pago OC"],
     ["estadoRev", "Estado"],
-    ...(showProblems ? [[null, "Comentario"]] : []),
+    ...((showProblems || showNotes) ? [[null, "Comentario"]] : []),
     [null, "Acciones"],
   ];
 
@@ -174,7 +174,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
                 </tr>
               ) : (
                 sorted.slice(0, 800).map(r => (
-                  <InvoiceRow key={r.key} row={r} onMark={onMark} onNote={onNote} showProblems={showProblems} />
+                  <InvoiceRow key={r.key} row={r} onMark={onMark} onNote={onNote} showProblems={showProblems} showNotes={showNotes} />
                 ))
               )}
             </tbody>
@@ -190,7 +190,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
   );
 }
 
-function InvoiceRow({ row, onMark, onNote, showProblems }) {
+function InvoiceRow({ row, onMark, onNote, showProblems, showNotes }) {
   const sc = STATE_COLORS[row.estadoRev] || STATE_COLORS.PENDIENTE;
   const rowBg = row.sospechosa
     ? "rgba(239,68,68,0.06)"
@@ -262,7 +262,7 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
           {row.estadoRev}
         </span>
       </td>
-      {showProblems && (
+      {(showProblems || showNotes) && (
         <td style={{ ...tdStyle, minWidth: 200 }}>
           <NoteCell row={row} onNote={onNote} />
         </td>

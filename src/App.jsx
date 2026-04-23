@@ -384,7 +384,7 @@ export default function App() {
             <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
               Facturas ya procesadas (OK o REVISADA). Se ocultan del listado principal.
             </div>
-            <InvoiceTable rows={historicoRows} onMark={handleMark} />
+            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showNotes />
           </>
         )}
       </div>

@@ -176,8 +176,8 @@ export async function parseReporteOC(file) {
 
 // ─── REFERENCIA FACTURACIÓN.CL ─────────────────────────────────────
 // Columnas: Item, Folio, Documento, Tipo Documento, Rut Proveedor, Razon Social,
-//           Monto Total Documento, Fecha Emision, Referencia, N Referencia,
-//           Fecha Referencia, Razon Referencia, Usuario
+//           Monto Total Documento, Fecha Emision (H=aceptación), Referencia, N Referencia,
+//           Fecha Referencia (K=emisión real SII), Razon Referencia, Usuario
 export async function parseReferenciaFactCL(file) {
   const wb = await readWorkbook(file);
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -210,7 +210,8 @@ export async function parseReferenciaFactCL(file) {
       rut: normRut(r[cRut]),
       razonSocial: String(r[cRazon] ?? "").trim(),
       monto: parseCLP(r[cMonto]),
-      fecha: String(r[cFecha] ?? "").trim(),
+      fecha: String(r[cFechaRef] ?? "").trim(),   // col K: fecha real de emisión SII
+      fechaAceptacion: String(r[cFecha] ?? "").trim(), // col H: fecha de aceptación
       referencia: String(r[cRef] ?? "").trim(),
       nReferencia: normOC(r[cNRef]),
       fechaRef: String(r[cFechaRef] ?? "").trim(),

@@ -10,6 +10,26 @@
 
 import { normalizeRut } from "./historico";
 
+// Parsea "dd/MM/yyyy", "yyyy-MM-dd[...]" o Date → Date. null si no se puede.
+function toDate(s) {
+  if (!s) return null;
+  if (s instanceof Date && !isNaN(s)) return s;
+  const str = String(s).trim();
+  let m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) {
+    const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+    return isNaN(d) ? null : d;
+  }
+  m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return isNaN(d) ? null : d;
+  }
+  return null;
+}
+
+const daysBetween = (a, b) => Math.round((b - a) / (1000 * 60 * 60 * 24));
+
 export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCreditoSet = new Set()) {
   // Indexar Reporte OC por Nro
   const ocByNro = new Map();
@@ -50,16 +70,45 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
 
     const tieneRefOC = !!ocLinked;
     const isContado = inv.condicion === "2CONTADO";
+    const isNomina  = inv.condicion === "1NOMINA";
     const enHistoricoCredito = historicoCreditoSet.has(normalizeRut(inv.rut));
-    const sospechosa = isContado && (tieneRefOC || enHistoricoCredito);
+
+    // Fecha de emisión la tomamos de Fact.cl (la más confiable para el SII).
+    const factEmision = factRefs.find(f => f.fecha)?.fecha || "";
+    const fechaEmisionFact = factEmision;
+
+    // Regla NOMINA: vencimiento debe ser >= 30 días después de la emisión.
+    // Si no hay fecha de emisión en Fact.cl → sospechosa (no se puede validar plazo).
+    let nominaPlazoSospechoso = false;
+    let diasPlazo = null;
+    let motivoNomina = "";
+    if (isNomina) {
+      const dEm = toDate(factEmision);
+      const dVe = toDate(inv.vencimiento);
+      if (!dEm) {
+        nominaPlazoSospechoso = true;
+        motivoNomina = "NÓMINA sin fecha de emisión en Fact.cl — no se puede validar plazo";
+      } else if (dVe) {
+        diasPlazo = daysBetween(dEm, dVe);
+        if (diasPlazo < 30) {
+          nominaPlazoSospechoso = true;
+          motivoNomina = `NÓMINA con plazo de ${diasPlazo} día${diasPlazo === 1 ? "" : "s"} (emisión ${factEmision} → vencimiento ${inv.vencimiento}) — debería ser ≥ 30`;
+        }
+      }
+    }
+
+    const sospechosaContado = isContado && (tieneRefOC || enHistoricoCredito);
+    const sospechosa = sospechosaContado || nominaPlazoSospechoso;
 
     let alerta = "";
-    if (sospechosa) {
+    if (sospechosaContado) {
       if (tieneRefOC) {
         alerta = `Ingresada al CONTADO pero tiene OC ${nRef} (${ocLinked.formapago || "crédito"}) — debería ser NÓMINA`;
       } else {
         alerta = `Ingresada al CONTADO pero el proveedor aparece en el histórico de crédito — debería ser NÓMINA`;
       }
+    } else if (nominaPlazoSospechoso) {
+      alerta = motivoNomina;
     }
 
     return {
@@ -74,6 +123,9 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
       ocSucursal: ocLinked?.sucursal || "",
       tieneRefOC,
       enHistoricoCredito,
+      fechaEmisionFact,
+      diasPlazo,
+      nominaPlazoSospechoso,
       sospechosa,
       alerta,
     };

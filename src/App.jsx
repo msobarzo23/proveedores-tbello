@@ -75,15 +75,14 @@ export default function App() {
   );
 
   const handleMark = useCallback(async (row, estado) => {
-    // Optimistic update
+    const nota = row.nota || "";
     setReviews(prev => ({
       ...prev,
-      [row.key]: { estado, nota: prev[row.key]?.nota || "", updated_at: new Date().toISOString() },
+      [row.key]: { estado, nota, updated_at: new Date().toISOString() },
     }));
     try {
-      await saveReview(row.key, estado);
+      await saveReview(row.key, estado, nota);
     } catch (e) {
-      // Revert on error
       console.error(e);
       setReviews(prev => {
         const next = { ...prev };
@@ -91,6 +90,18 @@ export default function App() {
         return next;
       });
       alert("Error guardando: " + e.message);
+    }
+  }, []);
+
+  const handleNote = useCallback(async (row, nota) => {
+    setReviews(prev => ({
+      ...prev,
+      [row.key]: { ...prev[row.key], nota, updated_at: new Date().toISOString() },
+    }));
+    try {
+      await saveReview(row.key, row.estadoRev, nota);
+    } catch (e) {
+      console.error("Error guardando nota:", e);
     }
   }, []);
 
@@ -364,7 +375,7 @@ export default function App() {
               </div>
             )}
             {problemasRows.length > 0 && (
-              <InvoiceTable rows={problemasRows} onMark={handleMark} showProblems />
+              <InvoiceTable rows={problemasRows} onMark={handleMark} onNote={handleNote} showProblems />
             )}
           </>
         )}

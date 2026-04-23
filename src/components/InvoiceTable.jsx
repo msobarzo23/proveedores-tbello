@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 
-export default function InvoiceTable({ rows, onMark, showProblems = false }) {
+export default function InvoiceTable({ rows, onMark, onNote, showProblems = false }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
@@ -49,6 +49,24 @@ export default function InvoiceTable({ rows, onMark, showProblems = false }) {
   };
 
   const sospechosasCount = rows.filter(r => r.sospechosa).length;
+
+  const cols = [
+    ["condicion", "Cond."],
+    ["fechaFactura", "Fecha"],
+    ["vencimiento", "Vencimiento"],
+    ["tipoDoc", "Doc"],
+    ["folio", "Folio"],
+    ["rut", "RUT"],
+    ["proveedor", "Proveedor"],
+    ["cargoTotal", "Cargo"],
+    ["abonoTotal", "Abono"],
+    ["saldo", "Saldo"],
+    ["nReferencia", "OC"],
+    ["ocFormapago", "Forma pago OC"],
+    ["estadoRev", "Estado"],
+    ...(showProblems ? [[null, "Comentario"]] : []),
+    [null, "Acciones"],
+  ];
 
   return (
     <div>
@@ -124,22 +142,7 @@ export default function InvoiceTable({ rows, onMark, showProblems = false }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
               <tr>
-                {[
-                  ["condicion", "Cond."],
-                  ["fechaFactura", "Fecha"],
-                  ["vencimiento", "Vencimiento"],
-                  ["tipoDoc", "Doc"],
-                  ["folio", "Folio"],
-                  ["rut", "RUT"],
-                  ["proveedor", "Proveedor"],
-                  ["cargoTotal", "Cargo"],
-                  ["abonoTotal", "Abono"],
-                  ["saldo", "Saldo"],
-                  ["nReferencia", "OC"],
-                  ["ocFormapago", "Forma pago OC"],
-                  ["estadoRev", "Estado"],
-                  [null, "Acciones"],
-                ].map(([k, label], i) => (
+                {cols.map(([k, label], i) => (
                   <th key={i} onClick={() => k && handleSort(k)} style={{
                     padding: "10px 10px",
                     textAlign: "left",
@@ -165,13 +168,13 @@ export default function InvoiceTable({ rows, onMark, showProblems = false }) {
             <tbody>
               {sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={14} style={{ padding: 48, textAlign: "center", color: "#64748b", fontSize: 14 }}>
+                  <td colSpan={cols.length} style={{ padding: 48, textAlign: "center", color: "#64748b", fontSize: 14 }}>
                     {rows.length === 0 ? "Sin datos. Carga Defontana en la pestaña Carga." : "Sin resultados con los filtros actuales."}
                   </td>
                 </tr>
               ) : (
                 sorted.slice(0, 800).map(r => (
-                  <InvoiceRow key={r.key} row={r} onMark={onMark} showProblems={showProblems} />
+                  <InvoiceRow key={r.key} row={r} onMark={onMark} onNote={onNote} showProblems={showProblems} />
                 ))
               )}
             </tbody>
@@ -187,7 +190,7 @@ export default function InvoiceTable({ rows, onMark, showProblems = false }) {
   );
 }
 
-function InvoiceRow({ row, onMark, showProblems }) {
+function InvoiceRow({ row, onMark, onNote, showProblems }) {
   const sc = STATE_COLORS[row.estadoRev] || STATE_COLORS.PENDIENTE;
   const rowBg = row.sospechosa
     ? "rgba(239,68,68,0.06)"
@@ -259,10 +262,59 @@ function InvoiceRow({ row, onMark, showProblems }) {
           {row.estadoRev}
         </span>
       </td>
+      {showProblems && (
+        <td style={{ ...tdStyle, minWidth: 200 }}>
+          <NoteCell row={row} onNote={onNote} />
+        </td>
+      )}
       <td style={tdStyle}>
         <RowActions row={row} onMark={onMark} showProblems={showProblems} />
       </td>
     </tr>
+  );
+}
+
+function NoteCell({ row, onNote }) {
+  const [draft, setDraft] = useState(row.nota || "");
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => { setDraft(row.nota || ""); }, [row.nota]);
+
+  const save = async () => {
+    if (draft === (row.nota || "")) return;
+    await onNote(row, draft);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+
+  return (
+    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 4 }}>
+      <input
+        type="text"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => { if (e.key === "Enter") { save(); e.target.blur(); } }}
+        placeholder="Agregar comentario..."
+        style={{
+          flex: 1,
+          padding: "4px 8px",
+          background: draft ? "rgba(99,102,241,0.08)" : "rgba(15,23,42,0.5)",
+          border: `1px solid ${draft ? "rgba(99,102,241,0.35)" : "rgba(99,102,241,0.12)"}`,
+          borderRadius: 6,
+          color: "#e2e8f0",
+          fontSize: 11,
+          fontFamily: "inherit",
+          outline: "none",
+          minWidth: 0,
+          transition: "border-color 0.15s, background 0.15s",
+        }}
+        onFocus={e => { e.currentTarget.style.borderColor = "rgba(99,102,241,0.6)"; }}
+      />
+      {saved && (
+        <span style={{ fontSize: 10, color: "#22c55e", whiteSpace: "nowrap" }}>✓ guardado</span>
+      )}
+    </div>
   );
 }
 

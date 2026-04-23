@@ -77,7 +77,7 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
     const factEmision = factRefs.find(f => f.fecha)?.fecha || "";
     const fechaEmisionFact = factEmision;
 
-    // Regla NOMINA: vencimiento debe ser >= 30 días después de la emisión.
+    // Regla NOMINA: vencimiento debe ser >= 28 días después de la emisión.
     // Si no hay fecha de emisión en Fact.cl → sospechosa (no se puede validar plazo).
     let nominaPlazoSospechoso = false;
     let diasPlazo = null;
@@ -90,9 +90,9 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
         motivoNomina = "NÓMINA sin fecha de emisión en Fact.cl — no se puede validar plazo";
       } else if (dVe) {
         diasPlazo = daysBetween(dEm, dVe);
-        if (diasPlazo < 30) {
+        if (diasPlazo < 28) {
           nominaPlazoSospechoso = true;
-          motivoNomina = `NÓMINA con plazo de ${diasPlazo} día${diasPlazo === 1 ? "" : "s"} (emisión ${factEmision} → vencimiento ${inv.vencimiento}) — debería ser ≥ 30`;
+          motivoNomina = `NÓMINA con plazo de ${diasPlazo} día${diasPlazo === 1 ? "" : "s"} (emisión ${factEmision} → vencimiento ${inv.vencimiento}) — debería ser ≥ 28`;
         }
       }
     }

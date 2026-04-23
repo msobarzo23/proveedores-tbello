@@ -127,6 +127,7 @@ export default function InvoiceTable({ rows, onMark, showProblems = false }) {
                 {[
                   ["condicion", "Cond."],
                   ["fechaFactura", "Fecha"],
+                  ["vencimiento", "Vencimiento"],
                   ["tipoDoc", "Doc"],
                   ["folio", "Folio"],
                   ["rut", "RUT"],
@@ -164,7 +165,7 @@ export default function InvoiceTable({ rows, onMark, showProblems = false }) {
             <tbody>
               {sorted.length === 0 ? (
                 <tr>
-                  <td colSpan={13} style={{ padding: 48, textAlign: "center", color: "#64748b", fontSize: 14 }}>
+                  <td colSpan={14} style={{ padding: 48, textAlign: "center", color: "#64748b", fontSize: 14 }}>
                     {rows.length === 0 ? "Sin datos. Carga Defontana en la pestaña Carga." : "Sin resultados con los filtros actuales."}
                   </td>
                 </tr>
@@ -216,6 +217,7 @@ function InvoiceRow({ row, onMark, showProblems }) {
         </span>
       </td>
       <td style={tdStyle}>{fmtDate(row.fechaFactura)}</td>
+      <td style={tdStyle}>{fmtDate(row.vencimiento)}</td>
       <td style={{ ...tdStyle, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>
         {row.tipoDoc.replace("Electrónica", "Elec.").replace("Factura", "Fact.")}
       </td>

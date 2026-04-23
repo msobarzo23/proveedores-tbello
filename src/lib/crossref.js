@@ -10,16 +10,18 @@
 
 import { normalizeRut } from "./historico";
 
-// Parsea "dd/MM/yyyy", "yyyy-MM-dd[...]" o Date → Date. null si no se puede.
+// Parsea "dd/MM/yyyy", "dd-MM-yyyy", "yyyy-MM-dd[...]" o Date → Date. null si no se puede.
 function toDate(s) {
   if (!s) return null;
   if (s instanceof Date && !isNaN(s)) return s;
   const str = String(s).trim();
-  let m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  // dd/MM/yyyy o dd-MM-yyyy
+  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
   if (m) {
     const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
     return isNaN(d) ? null : d;
   }
+  // yyyy-MM-dd
   m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) {
     const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));

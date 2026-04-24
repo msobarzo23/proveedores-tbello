@@ -3,10 +3,12 @@
 //                                                                       → Reporte OC (por Nro)
 //                                → Histórico crédito (por RUT)
 //
-// Regla de alerta (línea roja):
-//   Si la factura Defontana tiene condición 2CONTADO
-//   Y (tiene una referencia a OC válida  ó  el RUT está en el histórico de crédito)
-//   → SOSPECHOSA (debería estar como 1NOMINA).
+// Reglas de alerta (línea roja). Una factura queda SOSPECHOSA si se cumple cualquiera:
+//   1. CONTADO con OC válida o RUT en histórico de crédito — debería ser NÓMINA.
+//   2. NÓMINA con plazo emisión→vencimiento < 28 días.
+//   3. Ingreso tardío: Defontana col F (fecha de ingreso a contabilidad) supera
+//      en más de 8 días a Fact.cl col K (fecha real de emisión SII). El plazo
+//      legal para declarar es 8 días; por eso el umbral.
 
 import { normalizeRut } from "./historico";
 
@@ -99,19 +101,37 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
       }
     }
 
-    const sospechosaContado = isContado && (tieneRefOC || enHistoricoCredito);
-    const sospechosa = sospechosaContado || nominaPlazoSospechoso;
+    // Regla INGRESO TARDÍO: Defontana col F es la fecha en que se ingresó la
+    // factura a contabilidad (no la de emisión). Si entre la emisión real
+    // (Fact.cl col K) y el ingreso Defontana hay > 8 días, la factura quedó
+    // "guardada" antes de entrar al sistema. Aplica a todas las condiciones.
+    let ingresoTardioSospechoso = false;
+    let diasIngreso = null;
+    let motivoIngreso = "";
+    const dEmFactIng = toDate(factEmision);
+    const dIngreso = toDate(inv.fechaFactura);
+    if (dEmFactIng && dIngreso) {
+      diasIngreso = daysBetween(dEmFactIng, dIngreso);
+      if (diasIngreso > 8) {
+        ingresoTardioSospechoso = true;
+        motivoIngreso = `Ingresada a Defontana ${diasIngreso} día${diasIngreso === 1 ? "" : "s"} después de la emisión SII (Fact.cl ${factEmision} → Defontana ${inv.fechaFactura}) — plazo legal ≤ 8`;
+      }
+    }
 
-    let alerta = "";
+    const sospechosaContado = isContado && (tieneRefOC || enHistoricoCredito);
+    const sospechosa = sospechosaContado || nominaPlazoSospechoso || ingresoTardioSospechoso;
+
+    const alertas = [];
     if (sospechosaContado) {
       if (tieneRefOC) {
-        alerta = `Ingresada al CONTADO pero tiene OC ${nRef} (${ocLinked.formapago || "crédito"}) — debería ser NÓMINA`;
+        alertas.push(`Ingresada al CONTADO pero tiene OC ${nRef} (${ocLinked.formapago || "crédito"}) — debería ser NÓMINA`);
       } else {
-        alerta = `Ingresada al CONTADO pero el proveedor aparece en el histórico de crédito — debería ser NÓMINA`;
+        alertas.push(`Ingresada al CONTADO pero el proveedor aparece en el histórico de crédito — debería ser NÓMINA`);
       }
-    } else if (nominaPlazoSospechoso) {
-      alerta = motivoNomina;
     }
+    if (nominaPlazoSospechoso) alertas.push(motivoNomina);
+    if (ingresoTardioSospechoso) alertas.push(motivoIngreso);
+    const alerta = alertas.join(" · ");
 
     return {
       ...inv,
@@ -128,6 +148,8 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
       fechaEmisionFact,
       diasPlazo,
       nominaPlazoSospechoso,
+      diasIngreso,
+      ingresoTardioSospechoso,
       sospechosa,
       alerta,
     };

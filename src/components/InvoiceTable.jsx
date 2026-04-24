@@ -219,7 +219,27 @@ function InvoiceRow({ row, onMark, onNote, showProblems, showNotes }) {
           {row.condicion === "1NOMINA" ? "NOM" : row.condicion === "2CONTADO" ? "CTD" : "-"}
         </span>
       </td>
-      <td style={tdStyle}>{fmtDate(row.fechaFactura)}</td>
+      <td style={tdStyle}>
+        {fmtDate(row.fechaFactura)}
+        {row.ingresoTardioSospechoso && (
+          <span
+            title={`Ingresada ${row.diasIngreso} días después de la emisión SII (> 8)`}
+            style={{
+              marginLeft: 6,
+              padding: "1px 5px",
+              borderRadius: 4,
+              fontSize: 9,
+              fontWeight: 700,
+              background: "rgba(239,68,68,0.15)",
+              color: "#f87171",
+              border: "1px solid rgba(239,68,68,0.35)",
+              fontFamily: "monospace",
+            }}
+          >
+            +{row.diasIngreso}d
+          </span>
+        )}
+      </td>
       <td style={tdStyle}>{fmtDate(row.vencimiento)}</td>
       <td style={{ ...tdStyle, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>
         {row.tipoDoc.replace("Electrónica", "Elec.").replace("Factura", "Fact.")}

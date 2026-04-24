@@ -228,3 +228,72 @@ export async function parseReferenciaFactCL(file) {
       return false;
     });
 }
+
+// ─── INFORME DE COMPRA FACTURACIÓN.CL ──────────────────────────────
+// Archivo distinto al de "Referencia": trae la fecha REAL de emisión SII
+// del documento comprado (no de su OC referenciada, que puede ser de años atrás).
+// Columnas (0-indexed):
+//   A (0)  N° Linea
+//   B (1)  Folio                    ← cruce con Defontana
+//   C (2)  Emitido
+//   D (3)  Documento                (FACTURA ELECTRONICA, GUIA, NOTA CREDITO, ...)
+//   E (4)  Tipo Documento           (33=fact, 34=exenta, 52=guía, 61=NC)
+//   F (5)  Rut                      ← cruce con Defontana
+//   G (6)  Razon Social
+//   T (19) Monto Total documento
+//   Y (24) Fecha Creacion
+//   Z (25) Fecha Emision            ← fecha real de emisión SII
+//
+// El archivo trae una fila por línea de detalle (varias filas por factura).
+// Aquí agrupamos por rut+folio y tomamos la primera aparición, porque todas
+// las líneas de una misma factura comparten rut, folio, razón y fecha.
+export async function parseInformeCompraFactCL(file) {
+  const wb = await readWorkbook(file);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  if (!raw.length) throw new Error("Informe de Compra vacío");
+
+  // Validar encabezados esperados en fila 0
+  const headers = raw[0].map(h => String(h ?? "").trim().toLowerCase());
+  const hasFolio = headers[1]?.includes("folio");
+  const hasRut = headers[5]?.includes("rut");
+  const hasFechaEm = headers[25]?.includes("fecha emision");
+  if (!hasFolio || !hasRut || !hasFechaEm) {
+    throw new Error("Informe de Compra con encabezados inesperados (B=Folio, F=Rut, Z=Fecha Emision)");
+  }
+
+  const map = new Map();
+  for (let i = 1; i < raw.length; i++) {
+    const r = raw[i];
+    if (!r || !r.some(c => c !== "" && c != null)) continue;
+
+    const tipoDoc = String(r[4] ?? "").trim().toUpperCase();
+    const documento = String(r[3] ?? "").trim();
+    // Sólo facturas (33 = afecta, 34 = exenta). Descartamos guías (52),
+    // notas de crédito/débito (61/56) y otros.
+    const esFactura = tipoDoc === "33" || tipoDoc === "34"
+      || (documento.toUpperCase().startsWith("FACTURA") && !documento.toUpperCase().includes("NOTA"));
+    if (!esFactura) continue;
+
+    const rut = normRut(r[5]);
+    const folio = normFolio(r[1]);
+    if (!rut || !folio) continue;
+
+    const key = `${rut}|${folio}`;
+    if (map.has(key)) continue; // ya tenemos la fecha — saltamos líneas adicionales
+
+    map.set(key, {
+      folio,
+      rut,
+      rutRaw: String(r[5] ?? "").trim(),
+      razonSocial: String(r[6] ?? "").trim(),
+      documento,
+      tipoDoc,
+      fechaEmision: String(r[25] ?? "").trim(),   // col Z — la que importa
+      fechaCreacion: String(r[24] ?? "").trim(),  // col Y — creación en el portal
+      montoTotal: parseCLP(r[19]),
+    });
+  }
+
+  return Array.from(map.values());
+}

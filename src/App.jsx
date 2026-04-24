@@ -15,6 +15,7 @@ export default function App() {
   const [defontana, setDefontana] = useState([]);
   const [oc, setOc] = useState([]);
   const [factcl, setFactcl] = useState([]);
+  const [compra, setCompra] = useState([]);
   const [reviews, setReviews] = useState({});
   const [historicoCredito, setHistoricoCredito] = useState(new Set());
   const [historicoCount, setHistoricoCount] = useState(0);
@@ -53,6 +54,7 @@ export default function App() {
       setDefontana(r.defontana || []);
       setOc(r.oc || []);
       setFactcl(r.factcl || []);
+      setCompra(r.compra || []);
       setReviews(updatedReviews);
       setSource(r.source);
       setHistoricoCredito(h.set);
@@ -70,9 +72,9 @@ export default function App() {
   const enrichedAll = useMemo(() => {
     if (!defontana.length) return [];
     const grouped = groupDefontanaByInvoice(defontana);
-    const crossed = buildCrossref(grouped, oc, factcl, historicoCredito);
+    const crossed = buildCrossref(grouped, oc, factcl, historicoCredito, compra);
     return applyReviewState(crossed, reviews);
-  }, [defontana, oc, factcl, reviews, historicoCredito]);
+  }, [defontana, oc, factcl, compra, reviews, historicoCredito]);
 
   // Principal: todo lo que no esté OK o REVISADA (es decir PENDIENTE + REVISAR)
   // La pestaña problemas los filtra aparte, así que aquí mostramos PENDIENTE.

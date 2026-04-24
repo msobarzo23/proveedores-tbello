@@ -1,14 +1,22 @@
 // Motor de cruce:
-// Defontana (agrupado por factura) → Facturación.cl (por RUT+Folio) → N Referencia = OC
-//                                                                       → Reporte OC (por Nro)
-//                                → Histórico crédito (por RUT)
+// Defontana (agrupado por factura) → Informe Compra Fact.cl (por RUT+Folio) → Fecha Emisión real
+//                                  → Referencia Fact.cl (por RUT+Folio)      → N Referencia = OC
+//                                                                            → Reporte OC (por Nro)
+//                                  → Histórico crédito (por RUT)
+//
+// Hay dos archivos de Facturación.cl:
+//   - "Informe de Compra": fila por línea de detalle, col Z = fecha real de
+//      emisión SII del documento comprado. Es la fuente de verdad para la fecha.
+//   - "Referencia": fila por referencia declarada (N Ref). Sirve para enlazar
+//      con la OC en Reporte OC. Su fecha puede ser de años atrás si la OC es
+//      antigua, por eso ya no la usamos como fecha de emisión.
 //
 // Reglas de alerta (línea roja). Una factura queda SOSPECHOSA si se cumple cualquiera:
 //   1. CONTADO con OC válida o RUT en histórico de crédito — debería ser NÓMINA.
 //   2. NÓMINA con plazo emisión→vencimiento < 28 días.
 //   3. Ingreso tardío: Defontana col F (fecha de ingreso a contabilidad) supera
-//      en más de 8 días a Fact.cl col K (fecha real de emisión SII). El plazo
-//      legal para declarar es 8 días; por eso el umbral.
+//      en más de 8 días a la fecha real de emisión SII (Informe de Compra col Z,
+//      con fallback a Referencia col K). El plazo legal para declarar es 8 días.
 
 import { normalizeRut } from "./historico";
 
@@ -34,21 +42,28 @@ function toDate(s) {
 
 const daysBetween = (a, b) => Math.round((b - a) / (1000 * 60 * 60 * 24));
 
-export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCreditoSet = new Set()) {
+export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCreditoSet = new Set(), compraRows = []) {
   // Indexar Reporte OC por Nro
   const ocByNro = new Map();
   for (const oc of ocRows) {
     if (oc.oc) ocByNro.set(oc.oc, oc);
   }
 
-  // Indexar Fact.cl por RUT+Folio. Puede haber varias entradas por la misma
-  // factura (si tiene varias referencias). Guardamos todas.
+  // Indexar Fact.cl Referencia por RUT+Folio. Puede haber varias entradas por
+  // la misma factura (si tiene varias referencias). Guardamos todas.
   const factByRutFolio = new Map();
   for (const f of factclRows) {
     if (!f.rut || !f.folio) continue;
     const k = `${f.rut}|${f.folio}`;
     if (!factByRutFolio.has(k)) factByRutFolio.set(k, []);
     factByRutFolio.get(k).push(f);
+  }
+
+  // Indexar Informe de Compra por RUT+Folio (ya viene con una fila por factura).
+  const compraByRutFolio = new Map();
+  for (const c of compraRows) {
+    if (!c.rut || !c.folio) continue;
+    compraByRutFolio.set(`${c.rut}|${c.folio}`, c);
   }
 
   return defontanaInvoices.map(inv => {
@@ -77,9 +92,15 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
     const isNomina  = inv.condicion === "1NOMINA";
     const enHistoricoCredito = historicoCreditoSet.has(normalizeRut(inv.rut));
 
-    // Fecha de emisión la tomamos de Fact.cl (la más confiable para el SII).
-    const factEmision = factRefs.find(f => f.fecha)?.fecha || "";
+    // Fecha de emisión real SII: preferimos el Informe de Compra (col Z),
+    // porque es del documento actual. Si no está, caemos al archivo de
+    // Referencia (col K), pero OJO: esa fecha puede ser de la OC referenciada
+    // y no del documento emitido.
+    const compra = compraByRutFolio.get(k);
+    const factRefFecha = factRefs.find(f => f.fecha)?.fecha || "";
+    const factEmision = compra?.fechaEmision || factRefFecha;
     const fechaEmisionFact = factEmision;
+    const fuenteFecha = compra?.fechaEmision ? "informe_compra" : (factRefFecha ? "referencia" : "");
 
     // Regla NOMINA: vencimiento debe ser >= 28 días después de la emisión.
     // Si no hay fecha de emisión en Fact.cl → sospechosa (no se puede validar plazo).
@@ -146,6 +167,7 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
       tieneRefOC,
       enHistoricoCredito,
       fechaEmisionFact,
+      fuenteFecha,
       diasPlazo,
       nominaPlazoSospechoso,
       diasIngreso,

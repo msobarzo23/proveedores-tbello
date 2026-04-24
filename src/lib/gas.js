@@ -10,6 +10,7 @@ const LS_KEYS = {
   DEFONTANA: "data_defontana",
   OC: "data_oc",
   FACTCL: "data_factcl",
+  COMPRA: "data_compra",
   REVIEWS: "data_reviews",
   TIMESTAMPS: "data_timestamps",
 };
@@ -73,9 +74,10 @@ async function saveWithFallback(key, dataset, rows) {
   }
 }
 
-export const saveDefontana = (rows) => saveWithFallback(LS_KEYS.DEFONTANA, "defontana", rows);
-export const saveOC        = (rows) => saveWithFallback(LS_KEYS.OC, "oc", rows);
-export const saveFactCL    = (rows) => saveWithFallback(LS_KEYS.FACTCL, "factcl", rows);
+export const saveDefontana     = (rows) => saveWithFallback(LS_KEYS.DEFONTANA, "defontana", rows);
+export const saveOC            = (rows) => saveWithFallback(LS_KEYS.OC, "oc", rows);
+export const saveFactCL        = (rows) => saveWithFallback(LS_KEYS.FACTCL, "factcl", rows);
+export const saveInformeCompra = (rows) => saveWithFallback(LS_KEYS.COMPRA, "compra", rows);
 
 async function postDataset(url, dataset, rows) {
   const BATCH = 500;
@@ -119,11 +121,13 @@ export async function loadAll() {
       if (json.defontana) lsSet(LS_KEYS.DEFONTANA, json.defontana);
       if (json.oc) lsSet(LS_KEYS.OC, json.oc);
       if (json.factcl) lsSet(LS_KEYS.FACTCL, json.factcl);
+      if (json.compra) lsSet(LS_KEYS.COMPRA, json.compra);
       if (json.reviews) lsSet(LS_KEYS.REVIEWS, json.reviews);
       return {
         defontana: json.defontana || [],
         oc: json.oc || [],
         factcl: json.factcl || [],
+        compra: json.compra || lsGet(LS_KEYS.COMPRA, []) || [],
         reviews: json.reviews || {},
         source: "gas",
       };
@@ -135,6 +139,7 @@ export async function loadAll() {
     defontana: lsGet(LS_KEYS.DEFONTANA, []) || [],
     oc: lsGet(LS_KEYS.OC, []) || [],
     factcl: lsGet(LS_KEYS.FACTCL, []) || [],
+    compra: lsGet(LS_KEYS.COMPRA, []) || [],
     reviews: lsGet(LS_KEYS.REVIEWS, {}) || {},
     source: "local",
   };

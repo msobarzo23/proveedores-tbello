@@ -1,11 +1,11 @@
 import { useState } from "react";
 import FileDrop from "./FileDrop";
-import { parseDefontana, parseReporteOC, parseReferenciaFactCL } from "../lib/parsers";
-import { saveDefontana, saveOC, saveFactCL, getTimestamps } from "../lib/gas";
+import { parseDefontana, parseReporteOC, parseReferenciaFactCL, parseInformeCompraFactCL } from "../lib/parsers";
+import { saveDefontana, saveOC, saveFactCL, saveInformeCompra, getTimestamps } from "../lib/gas";
 import { IconCheck, IconAlert, IconRefresh } from "./Icons";
 
 export default function CargaTab({ onDataChanged }) {
-  const [pending, setPending] = useState({ defontana: null, oc: null, factcl: null });
+  const [pending, setPending] = useState({ defontana: null, oc: null, factcl: null, compra: null });
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState(null);
   const [stamps, setStamps] = useState(() => getTimestamps());
@@ -23,6 +23,7 @@ export default function CargaTab({ onDataChanged }) {
       if (pending.defontana) tasks.push(saveDefontana(pending.defontana).then(r => ["Defontana", r]));
       if (pending.oc)        tasks.push(saveOC(pending.oc).then(r => ["Reporte OC", r]));
       if (pending.factcl)    tasks.push(saveFactCL(pending.factcl).then(r => ["Referencia Fact.cl", r]));
+      if (pending.compra)    tasks.push(saveInformeCompra(pending.compra).then(r => ["Informe de Compra", r]));
       if (!tasks.length) {
         setResult({ ok: false, msg: "Carga al menos un archivo antes de guardar." });
         return;
@@ -43,7 +44,7 @@ export default function CargaTab({ onDataChanged }) {
     }
   };
 
-  const anyPending = pending.defontana || pending.oc || pending.factcl;
+  const anyPending = pending.defontana || pending.oc || pending.factcl || pending.compra;
 
   return (
     <div>
@@ -57,10 +58,12 @@ export default function CargaTab({ onDataChanged }) {
         color: "#cbd5e1",
         lineHeight: 1.6,
       }}>
-        <strong style={{ color: "#a5b4fc" }}>Flujo:</strong> carga los 3 archivos y pulsa <em>Guardar todo</em>.
-        El sistema cruza Defontana (facturas) con Fact.cl (referencia a OC) y Reporte OC (TMS)
-        para detectar facturas <strong style={{ color: "#f87171" }}>ingresadas al CONTADO</strong> que
-        tengan OC asociada (deberían ser NÓMINA).
+        <strong style={{ color: "#a5b4fc" }}>Flujo:</strong> carga los 4 archivos y pulsa <em>Guardar todo</em>.
+        El sistema cruza Defontana (facturas) con <em>Referencia Fact.cl</em> (link a OC),
+        <em> Informe de Compra</em> (fecha real de emisión SII) y Reporte OC (TMS). Detecta
+        facturas <strong style={{ color: "#f87171" }}>CONTADO con OC asociada</strong>,
+        <strong style={{ color: "#f87171" }}> NÓMINA con plazo &lt; 28 días</strong> y
+        <strong style={{ color: "#f87171" }}> ingresadas tarde a contabilidad (&gt; 8 días post-emisión)</strong>.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14, marginBottom: 20 }}>
@@ -80,10 +83,17 @@ export default function CargaTab({ onDataChanged }) {
         />
         <FileDrop
           label="3. REFERENCIA FACT.CL"
-          description="Detalle referencia compra · Facturación.cl"
+          description="Detalle referencia compra · sólo para enlazar con OC"
           parser={parseReferenciaFactCL}
           accent="#ec4899"
           onFileParsed={handleParsed("factcl")}
+        />
+        <FileDrop
+          label="4. INFORME DE COMPRA"
+          description="Informe por análisis · fecha real de emisión SII (col Z)"
+          parser={parseInformeCompraFactCL}
+          accent="#f59e0b"
+          onFileParsed={handleParsed("compra")}
         />
       </div>
 
@@ -100,6 +110,7 @@ export default function CargaTab({ onDataChanged }) {
           ["defontana", "Defontana"],
           ["oc", "Reporte OC"],
           ["factcl", "Referencia Fact.cl"],
+          ["compra", "Informe de Compra"],
         ].map(([k, name]) => (
           <div key={k} style={{ padding: 10, background: "rgba(15,23,42,0.4)", borderRadius: 8 }}>
             <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: "#475569" }}>{name}</div>
@@ -130,7 +141,8 @@ export default function CargaTab({ onDataChanged }) {
         {uploading ? "Guardando..." : `Guardar ${[
           pending.defontana && "Defontana",
           pending.oc && "OC",
-          pending.factcl && "Fact.cl",
+          pending.factcl && "Referencia",
+          pending.compra && "Compra",
         ].filter(Boolean).join(" + ") || "todo"}`}
       </button>
 

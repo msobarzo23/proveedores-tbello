@@ -106,6 +106,7 @@ export function groupDefontanaByInvoice(rows) {
         condicion: "",
         fechaFactura: "",
         vencimiento: "",
+        vencimientos: [],
         cargoTotal: 0,
         abonoTotal: 0,
         movimientos: 0,
@@ -122,6 +123,7 @@ export function groupDefontanaByInvoice(rows) {
       g.condicion = r.condicion || g.condicion;
       g.fechaFactura = r.fecha || g.fechaFactura;
       g.vencimiento = r.vencimiento || g.vencimiento;
+      if (r.vencimiento) g.vencimientos.push({ fecha: r.vencimiento, monto: r.cargo });
       if (!g.proveedor) g.proveedor = r.proveedor;
     } else {
       g.tieneEgreso = true;

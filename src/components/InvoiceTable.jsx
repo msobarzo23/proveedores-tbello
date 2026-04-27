@@ -240,7 +240,22 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
           </span>
         )}
       </td>
-      <td style={tdStyle}>{fmtDate(row.vencimiento)}</td>
+      <td style={tdStyle}>
+        {row.vencimientos && row.vencimientos.length > 1 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {row.vencimientos.map((v, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", whiteSpace: "nowrap" }}>
+                <span>{fmtDate(v.fecha)}</span>
+                <span style={{ fontFamily: "monospace", fontSize: 10, color: "#94a3b8" }}>
+                  {fmtCLP(v.monto)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          fmtDate(row.vencimiento)
+        )}
+      </td>
       <td style={{ ...tdStyle, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>
         {row.tipoDoc.replace("Electrónica", "Elec.").replace("Factura", "Fact.")}
       </td>

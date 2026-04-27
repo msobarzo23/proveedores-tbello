@@ -383,7 +383,7 @@ export default function App() {
       <div style={{ padding: 24, maxWidth: 1600, margin: "0 auto" }}>
         {tab === "carga" && <CargaTab onDataChanged={refresh} />}
         {tab === "principal" && (
-          <InvoiceTable rows={principalRows} onMark={handleMark} />
+          <InvoiceTable rows={principalRows} onMark={handleMark} onNote={handleNote} />
         )}
         {tab === "problemas" && (
           <>
@@ -409,7 +409,7 @@ export default function App() {
             <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
               Facturas ya procesadas (OK o REVISADA). Se ocultan del listado principal.
             </div>
-            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showNotes />
+            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} />
           </>
         )}
       </div>

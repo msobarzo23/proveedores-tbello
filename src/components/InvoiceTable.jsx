@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 
-export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showNotes = false }) {
+export default function InvoiceTable({ rows, onMark, onNote, showProblems = false }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
@@ -63,8 +63,8 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
     ["saldo", "Saldo"],
     ["nReferencia", "OC"],
     ["ocFormapago", "Forma pago OC"],
+    [null, "Comentario"],
     ["estadoRev", "Estado"],
-    ...((showProblems || showNotes) ? [[null, "Comentario"]] : []),
     [null, "Acciones"],
   ];
 
@@ -174,7 +174,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
                 </tr>
               ) : (
                 sorted.slice(0, 800).map(r => (
-                  <InvoiceRow key={r.key} row={r} onMark={onMark} onNote={onNote} showProblems={showProblems} showNotes={showNotes} />
+                  <InvoiceRow key={r.key} row={r} onMark={onMark} onNote={onNote} showProblems={showProblems} />
                 ))
               )}
             </tbody>
@@ -190,7 +190,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
   );
 }
 
-function InvoiceRow({ row, onMark, onNote, showProblems, showNotes }) {
+function InvoiceRow({ row, onMark, onNote, showProblems }) {
   const sc = STATE_COLORS[row.estadoRev] || STATE_COLORS.PENDIENTE;
   const rowBg = row.sospechosa
     ? "rgba(239,68,68,0.06)"
@@ -269,6 +269,9 @@ function InvoiceRow({ row, onMark, onNote, showProblems, showNotes }) {
           <span style={{ color: "#475569" }}>—</span>
         )}
       </td>
+      <td style={{ ...tdStyle, minWidth: 200 }}>
+        <NoteCell row={row} onNote={onNote} />
+      </td>
       <td style={tdStyle}>
         <span style={{
           padding: "2px 8px",
@@ -282,11 +285,6 @@ function InvoiceRow({ row, onMark, onNote, showProblems, showNotes }) {
           {row.estadoRev}
         </span>
       </td>
-      {(showProblems || showNotes) && (
-        <td style={{ ...tdStyle, minWidth: 200 }}>
-          <NoteCell row={row} onNote={onNote} />
-        </td>
-      )}
       <td style={tdStyle}>
         <RowActions row={row} onMark={onMark} showProblems={showProblems} />
       </td>

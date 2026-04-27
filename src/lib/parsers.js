@@ -128,12 +128,15 @@ export function groupDefontanaByInvoice(rows) {
     } else {
       g.tieneEgreso = true;
       // Fallback para facturas sin fila Cpra (ej. factorizadas, ingresadas vía
-      // asiento contable). Solo rellenamos lo que aún no exista, para no pisar
-      // datos provenientes de Cpra cuando sí los hay.
-      if (!g.condicion) g.condicion = r.condicion;
-      if (!g.fechaFactura) g.fechaFactura = r.fecha;
-      if (!g.vencimiento) g.vencimiento = r.vencimiento;
-      if (!g.proveedor) g.proveedor = r.proveedor;
+      // asiento contable que llega como EGRESO con monto en ABONO). Solo
+      // tomamos la fila como origen de la factura si crea deuda (abono > 0);
+      // los EGRESO de pago tienen cargo > 0 y no deben servir de fuente.
+      if (r.abono > 0) {
+        if (!g.condicion) g.condicion = r.condicion;
+        if (!g.fechaFactura) g.fechaFactura = r.fecha;
+        if (!g.vencimiento) g.vencimiento = r.vencimiento;
+        if (!g.proveedor) g.proveedor = r.proveedor;
+      }
     }
   }
 

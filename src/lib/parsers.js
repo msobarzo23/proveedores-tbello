@@ -127,6 +127,13 @@ export function groupDefontanaByInvoice(rows) {
       if (!g.proveedor) g.proveedor = r.proveedor;
     } else {
       g.tieneEgreso = true;
+      // Fallback para facturas sin fila Cpra (ej. factorizadas, ingresadas vía
+      // asiento contable). Solo rellenamos lo que aún no exista, para no pisar
+      // datos provenientes de Cpra cuando sí los hay.
+      if (!g.condicion) g.condicion = r.condicion;
+      if (!g.fechaFactura) g.fechaFactura = r.fecha;
+      if (!g.vencimiento) g.vencimiento = r.vencimiento;
+      if (!g.proveedor) g.proveedor = r.proveedor;
     }
   }
 

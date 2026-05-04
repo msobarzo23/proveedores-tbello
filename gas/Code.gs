@@ -4,7 +4,7 @@
  * Cómo usar:
  *   1. Crear un Google Sheet nuevo (o usar uno existente). Guardar su ID.
  *   2. Extensiones → Apps Script. Pegar este código completo.
- *   3. Ejecutar `setup` una vez (crea las hojas: Defontana, OC, FactCL, Reviews).
+ *   3. Ejecutar `setup` una vez (crea las hojas: Defontana, OC, FactCL, Compra, Reviews).
  *   4. Implementar → Nueva implementación → tipo: App web
  *      - Ejecutar como: yo mismo
  *      - Quién tiene acceso: cualquiera (o "cualquiera con enlace")
@@ -15,6 +15,7 @@ const SHEETS = {
   DEFONTANA: "Defontana",
   OC: "OC",
   FACTCL: "FactCL",
+  COMPRA: "Compra",
   REVIEWS: "Reviews",
 };
 
@@ -84,8 +85,9 @@ function loadAll_() {
   };
 
   const defontana = readSheet(SHEETS.DEFONTANA);
-  const oc = readSheet(SHEETS.OC);
-  const factcl = readSheet(SHEETS.FACTCL);
+  const oc        = readSheet(SHEETS.OC);
+  const factcl    = readSheet(SHEETS.FACTCL);
+  const compra    = readSheet(SHEETS.COMPRA);
 
   // Reviews → objeto keyed por key
   const revSheet = ss.getSheetByName(SHEETS.REVIEWS);
@@ -98,15 +100,16 @@ function loadAll_() {
     });
   }
 
-  return { ok: true, defontana, oc, factcl, reviews };
+  return { ok: true, defontana, oc, factcl, compra, reviews };
 }
 
 function saveDataset_({ dataset, rows, clear, isLast }) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const name = {
     defontana: SHEETS.DEFONTANA,
-    oc: SHEETS.OC,
-    factcl: SHEETS.FACTCL,
+    oc:        SHEETS.OC,
+    factcl:    SHEETS.FACTCL,
+    compra:    SHEETS.COMPRA,
   }[dataset];
   if (!name) throw new Error("Dataset inválido: " + dataset);
 

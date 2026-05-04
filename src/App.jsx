@@ -89,10 +89,37 @@ export default function App() {
     [enrichedAll]
   );
 
-  const historicoRows = useMemo(
-    () => enrichedAll.filter(r => r.estadoRev === "OK" || r.estadoRev === "REVISADA"),
-    [enrichedAll]
-  );
+  // Histórico: OK + REVISADA. Incluye filas "fantasma" para reviews cuya key
+  // ya no está en el Defontana actual (típicamente facturas auto-conciliadas
+  // cuando se sube un Defontana nuevo). El Sheet conserva el review pero al
+  // no haber fila Defontana quedaban invisibles en la app.
+  const historicoRows = useMemo(() => {
+    const realKeys = new Set(enrichedAll.map(r => r.key));
+    const reales = enrichedAll.filter(r => r.estadoRev === "OK" || r.estadoRev === "REVISADA");
+    const fantasmas = [];
+    for (const [key, rev] of Object.entries(reviews || {})) {
+      if (realKeys.has(key)) continue;
+      if (rev.estado !== "OK" && rev.estado !== "REVISADA") continue;
+      const [rut = "", folio = "", tipoDoc = ""] = key.split("|");
+      fantasmas.push({
+        key, rut, rutRaw: rut, folio, folioRaw: folio, tipoDoc,
+        proveedor: "", condicion: "",
+        fechaFactura: "", vencimiento: "", vencimientos: [],
+        cargoTotal: 0, abonoTotal: 0, saldo: 0,
+        movimientos: 0, tieneCompra: false, tieneEgreso: false, pagada: true,
+        nReferencia: "", ocFormapago: "", ocTotal: 0, ocEstado: "",
+        ocProveedor: "", ocFecha: "", ocCreadaPor: "", ocSucursal: "",
+        tieneRefOC: false, enHistoricoCredito: false,
+        fechaEmisionFact: "", fuenteFecha: "",
+        diasPlazo: null, nominaPlazoSospechoso: false,
+        diasIngreso: null, ingresoTardioSospechoso: false,
+        sospechosa: false, alerta: "",
+        estadoRev: rev.estado, nota: rev.nota || "", revUpdatedAt: rev.updated_at || "",
+        soloEnReviews: true,
+      });
+    }
+    return [...reales, ...fantasmas];
+  }, [enrichedAll, reviews]);
 
   const sospechosasCount = useMemo(
     () => principalRows.filter(r => r.sospechosa).length,

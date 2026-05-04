@@ -259,7 +259,27 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
       <td style={{ ...tdStyle, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>
         {row.tipoDoc.replace("Electrónica", "Elec.").replace("Factura", "Fact.")}
       </td>
-      <td style={{ ...tdStyle, fontFamily: "monospace", fontWeight: 600, color: "#e2e8f0" }}>{row.folio}</td>
+      <td style={{ ...tdStyle, fontFamily: "monospace", fontWeight: 600, color: "#e2e8f0" }}>
+        {row.folio}
+        {row.soloEnReviews && (
+          <span
+            title="Auto-conciliada: ya no está en el Defontana actual, solo persiste en la pestaña Reviews del Google Sheet"
+            style={{
+              marginLeft: 6,
+              padding: "1px 5px",
+              borderRadius: 4,
+              fontSize: 9,
+              fontWeight: 700,
+              background: "rgba(148,163,184,0.15)",
+              color: "#94a3b8",
+              border: "1px solid rgba(148,163,184,0.35)",
+              fontFamily: "monospace",
+            }}
+          >
+            solo reviews
+          </span>
+        )}
+      </td>
       <td style={{ ...tdStyle, fontFamily: "monospace" }}>{fmtRut(row.rut)}</td>
       <td style={{ ...tdStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>{row.proveedor}</td>
       <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right" }}>{fmtCLP(row.cargoTotal)}</td>

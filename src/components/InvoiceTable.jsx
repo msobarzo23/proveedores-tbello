@@ -2,10 +2,11 @@ import { useMemo, useState, useEffect } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 
-export default function InvoiceTable({ rows, onMark, onNote, showProblems = false }) {
+export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showEstadoFilter = false }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
+  const [filterEstado, setFilterEstado] = useState("TODAS");
   const [sortCol, setSortCol] = useState("fechaFactura");
   const [sortDir, setSortDir] = useState("desc");
 
@@ -22,9 +23,10 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
       if (filterAlert === "SOSPECHOSAS" && !r.sospechosa) return false;
       if (filterAlert === "CON_OC" && !r.tieneRefOC) return false;
       if (filterAlert === "SIN_OC" && r.tieneRefOC) return false;
+      if (showEstadoFilter && filterEstado !== "TODAS" && r.estadoRev !== filterEstado) return false;
       return true;
     });
-  }, [rows, searchText, filterCond, filterAlert]);
+  }, [rows, searchText, filterCond, filterAlert, filterEstado, showEstadoFilter]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -130,6 +132,13 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
           <option value="CON_OC">Con OC</option>
           <option value="SIN_OC">Sin OC</option>
         </select>
+        {showEstadoFilter && (
+          <select value={filterEstado} onChange={e => setFilterEstado(e.target.value)} style={selectStyle}>
+            <option value="TODAS">Todos los estados</option>
+            <option value="OK">OK</option>
+            <option value="REVISADA">REVISADA</option>
+          </select>
+        )}
       </div>
 
       <div style={{

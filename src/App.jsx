@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
 import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./components/Icons";
@@ -23,6 +23,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
+  // Ref con el último enrichedAll, para poder snapshotear datos de filas que
+  // están a punto de desaparecer del nuevo Defontana al auto-conciliar.
+  const enrichedRef = useRef([]);
+
   const refresh = useCallback(async (conConciliacion = false) => {
     setLoading(true);
     setErr(null);
@@ -35,19 +39,31 @@ export default function App() {
       // se marcan REVISADA con nota "Conciliado". Solo corre al subir Defontana.
       if (conConciliacion && r.defontana && r.defontana.length > 0) {
         const keysNuevos = new Set(groupDefontanaByInvoice(r.defontana).map(inv => inv.key));
+        const previousByKey = new Map(enrichedRef.current.map(row => [row.key, row]));
         const autoConciliadas = [];
         updatedReviews = { ...updatedReviews };
         for (const [key, rev] of Object.entries(updatedReviews)) {
           if (rev.estado === "REVISAR" && !keysNuevos.has(key)) {
             const notaPrevia = rev.nota || "";
             const nuevaNota = notaPrevia ? `${notaPrevia} · Conciliado` : "Conciliado";
-            updatedReviews[key] = { estado: "REVISADA", nota: nuevaNota, updated_at: new Date().toISOString() };
-            autoConciliadas.push({ key, nota: nuevaNota });
+            // Capturar snapshot desde la fila enriquecida anterior (si existe),
+            // o preservar el snapshot ya guardado en la review.
+            const previous = previousByKey.get(key);
+            const snapshot = (previous ? snapshotFromRow(previous) : null) || rev.snapshot || null;
+            updatedReviews[key] = {
+              ...rev,
+              estado: "REVISADA",
+              nota: nuevaNota,
+              updated_at: new Date().toISOString(),
+              snapshot,
+            };
+            autoConciliadas.push({ key, nota: nuevaNota, snapshot });
           }
         }
         if (autoConciliadas.length > 0) {
-          Promise.all(autoConciliadas.map(({ key, nota }) => saveReview(key, "REVISADA", nota)))
-            .catch(e => console.warn("Error guardando auto-conciliación:", e));
+          Promise.all(
+            autoConciliadas.map(({ key, nota, snapshot }) => saveReview(key, "REVISADA", nota, snapshot))
+          ).catch(e => console.warn("Error guardando auto-conciliación:", e));
         }
       }
 
@@ -66,15 +82,72 @@ export default function App() {
     }
   }, []);
 
+  // Extrae los campos persistibles de una fila enriquecida.
+  function snapshotFromRow(row) {
+    if (!row) return null;
+    return {
+      rut: row.rut, rutRaw: row.rutRaw,
+      folio: row.folio, folioRaw: row.folioRaw,
+      tipoDoc: row.tipoDoc,
+      proveedor: row.proveedor,
+      condicion: row.condicion,
+      fechaFactura: row.fechaFactura,
+      vencimiento: row.vencimiento,
+      vencimientos: row.vencimientos,
+      cargoTotal: row.cargoTotal,
+      abonoTotal: row.abonoTotal,
+      saldo: row.saldo,
+      pagada: row.pagada,
+      nReferencia: row.nReferencia,
+      ocFormapago: row.ocFormapago,
+    };
+  }
+
   useEffect(() => { refresh(); }, [refresh]);
 
   // ─── Procesamiento: agrupar + cruzar + aplicar estado de revisión ──
+  // Incluye filas "fantasma" para reviews OK/REVISADA cuya factura ya no está
+  // en el Defontana actual (auto-conciliadas o eliminadas). Si la review tiene
+  // snapshot, se usa para llenar proveedor/vencimiento/montos; igual pasa por
+  // buildCrossref para que Fact.cl/Informe de Compra rellenen lo que puedan.
   const enrichedAll = useMemo(() => {
-    if (!defontana.length) return [];
     const grouped = groupDefontanaByInvoice(defontana);
-    const crossed = buildCrossref(grouped, oc, factcl, historicoCredito, compra);
+    const realKeys = new Set(grouped.map(g => g.key));
+    const phantoms = [];
+    for (const [key, rev] of Object.entries(reviews || {})) {
+      if (realKeys.has(key)) continue;
+      if (rev.estado !== "OK" && rev.estado !== "REVISADA") continue;
+      const [rut = "", folio = "", tipoDoc = ""] = key.split("|");
+      const s = rev.snapshot || {};
+      phantoms.push({
+        key,
+        rut: s.rut || rut,
+        rutRaw: s.rutRaw || rut,
+        folio: s.folio || folio,
+        folioRaw: s.folioRaw || folio,
+        tipoDoc: s.tipoDoc || tipoDoc,
+        proveedor: s.proveedor || "",
+        condicion: s.condicion || "",
+        fechaFactura: s.fechaFactura || "",
+        vencimiento: s.vencimiento || "",
+        vencimientos: s.vencimientos || [],
+        cargoTotal: s.cargoTotal || 0,
+        abonoTotal: s.abonoTotal || 0,
+        saldo: s.saldo || 0,
+        movimientos: 0,
+        tieneCompra: false,
+        tieneEgreso: false,
+        pagada: s.pagada ?? true,
+        soloEnReviews: true,
+      });
+    }
+    if (!grouped.length && !phantoms.length) return [];
+    const crossed = buildCrossref([...grouped, ...phantoms], oc, factcl, historicoCredito, compra);
     return applyReviewState(crossed, reviews);
   }, [defontana, oc, factcl, compra, reviews, historicoCredito]);
+
+  // Mantener ref en sync para el auto-conciliador de refresh.
+  useEffect(() => { enrichedRef.current = enrichedAll; }, [enrichedAll]);
 
   // Principal: todo lo que no esté OK o REVISADA (es decir PENDIENTE + REVISAR)
   // La pestaña problemas los filtra aparte, así que aquí mostramos PENDIENTE.
@@ -89,37 +162,10 @@ export default function App() {
     [enrichedAll]
   );
 
-  // Histórico: OK + REVISADA. Incluye filas "fantasma" para reviews cuya key
-  // ya no está en el Defontana actual (típicamente facturas auto-conciliadas
-  // cuando se sube un Defontana nuevo). El Sheet conserva el review pero al
-  // no haber fila Defontana quedaban invisibles en la app.
-  const historicoRows = useMemo(() => {
-    const realKeys = new Set(enrichedAll.map(r => r.key));
-    const reales = enrichedAll.filter(r => r.estadoRev === "OK" || r.estadoRev === "REVISADA");
-    const fantasmas = [];
-    for (const [key, rev] of Object.entries(reviews || {})) {
-      if (realKeys.has(key)) continue;
-      if (rev.estado !== "OK" && rev.estado !== "REVISADA") continue;
-      const [rut = "", folio = "", tipoDoc = ""] = key.split("|");
-      fantasmas.push({
-        key, rut, rutRaw: rut, folio, folioRaw: folio, tipoDoc,
-        proveedor: "", condicion: "",
-        fechaFactura: "", vencimiento: "", vencimientos: [],
-        cargoTotal: 0, abonoTotal: 0, saldo: 0,
-        movimientos: 0, tieneCompra: false, tieneEgreso: false, pagada: true,
-        nReferencia: "", ocFormapago: "", ocTotal: 0, ocEstado: "",
-        ocProveedor: "", ocFecha: "", ocCreadaPor: "", ocSucursal: "",
-        tieneRefOC: false, enHistoricoCredito: false,
-        fechaEmisionFact: "", fuenteFecha: "",
-        diasPlazo: null, nominaPlazoSospechoso: false,
-        diasIngreso: null, ingresoTardioSospechoso: false,
-        sospechosa: false, alerta: "",
-        estadoRev: rev.estado, nota: rev.nota || "", revUpdatedAt: rev.updated_at || "",
-        soloEnReviews: true,
-      });
-    }
-    return [...reales, ...fantasmas];
-  }, [enrichedAll, reviews]);
+  const historicoRows = useMemo(
+    () => enrichedAll.filter(r => r.estadoRev === "OK" || r.estadoRev === "REVISADA"),
+    [enrichedAll]
+  );
 
   const sospechosasCount = useMemo(
     () => principalRows.filter(r => r.sospechosa).length,
@@ -128,12 +174,15 @@ export default function App() {
 
   const handleMark = useCallback(async (row, estado) => {
     const nota = row.nota || "";
+    // Si la fila no es fantasma, capturamos snapshot fresco para preservar
+    // proveedor/vencimiento/montos cuando la factura desaparezca de Defontana.
+    const snapshot = row.soloEnReviews ? null : snapshotFromRow(row);
     setReviews(prev => ({
       ...prev,
-      [row.key]: { estado, nota, updated_at: new Date().toISOString() },
+      [row.key]: { estado, nota, updated_at: new Date().toISOString(), snapshot: snapshot || prev[row.key]?.snapshot || null },
     }));
     try {
-      await saveReview(row.key, estado, nota);
+      await saveReview(row.key, estado, nota, snapshot);
     } catch (e) {
       console.error(e);
       setReviews(prev => {
@@ -146,12 +195,13 @@ export default function App() {
   }, []);
 
   const handleNote = useCallback(async (row, nota) => {
+    const snapshot = row.soloEnReviews ? null : snapshotFromRow(row);
     setReviews(prev => ({
       ...prev,
-      [row.key]: { ...prev[row.key], nota, updated_at: new Date().toISOString() },
+      [row.key]: { ...prev[row.key], nota, updated_at: new Date().toISOString(), snapshot: snapshot || prev[row.key]?.snapshot || null },
     }));
     try {
-      await saveReview(row.key, row.estadoRev, nota);
+      await saveReview(row.key, row.estadoRev, nota, snapshot);
     } catch (e) {
       console.error("Error guardando nota:", e);
     }
@@ -436,7 +486,7 @@ export default function App() {
             <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
               Facturas ya procesadas (OK o REVISADA). Se ocultan del listado principal.
             </div>
-            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} />
+            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showEstadoFilter />
           </>
         )}
       </div>

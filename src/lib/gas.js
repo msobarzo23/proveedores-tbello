@@ -146,9 +146,18 @@ export async function loadAll() {
 }
 
 // ─── REVIEWS ────────────────────────────────────────────────────
-export async function saveReview(key, estado, nota = "") {
+// snapshot: opcional, objeto con campos para preservar info de la fila
+// (proveedor, vencimiento, montos, etc.) cuando la factura desaparece
+// de Defontana en cargas posteriores.
+export async function saveReview(key, estado, nota = "", snapshot = null) {
   const reviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
-  reviews[key] = { estado, nota, updated_at: new Date().toISOString() };
+  const existing = reviews[key] || {};
+  reviews[key] = {
+    estado,
+    nota,
+    updated_at: new Date().toISOString(),
+    snapshot: snapshot || existing.snapshot || null,
+  };
   lsSet(LS_KEYS.REVIEWS, reviews);
 
   const url = getGasUrl();
@@ -157,7 +166,7 @@ export async function saveReview(key, estado, nota = "") {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "save_review", key, estado, nota }),
+      body: JSON.stringify({ action: "save_review", key, estado, nota, snapshot: reviews[key].snapshot }),
     });
     const text = await res.text();
     const json = JSON.parse(text);

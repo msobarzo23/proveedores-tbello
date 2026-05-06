@@ -178,6 +178,107 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
   });
 }
 
+// ─── FANTASMAS: aceptadas en SII pero sin registro en Defontana ────
+// Cruza el set de facturas Defontana (RUT+Folio) contra los archivos de
+// Facturación.cl (Informe de Compra y Referencia). Devuelve filas con la
+// misma forma que las del listado principal para reutilizar el sistema de
+// revisiones; key con prefijo `FCL|` para no chocar con keys de Defontana.
+//
+// Los parsers de Fact.cl ya filtran sólo facturas (33/34). Del lado Defontana
+// el set "enDefontana" considera únicamente filas cuyo Documento empieza con
+// "Factura", para no matchear contra notas de crédito o débito que casualmente
+// compartan folio.
+export function findFactCLSinDefontana(defontanaInvoices, compraRows = [], factclRows = []) {
+  const enDefontana = new Set();
+  for (const inv of defontanaInvoices) {
+    if (!inv.rut || !inv.folio) continue;
+    const td = String(inv.tipoDoc || "").toLowerCase();
+    if (!td.startsWith("factura")) continue;
+    enDefontana.add(`${inv.rut}|${inv.folio}`);
+  }
+
+  // Preferimos Informe de Compra porque trae fecha de emisión real SII.
+  const candidatos = new Map();
+  for (const c of compraRows) {
+    if (!c.rut || !c.folio) continue;
+    const k = `${c.rut}|${c.folio}`;
+    if (candidatos.has(k)) continue;
+    candidatos.set(k, {
+      rut: c.rut,
+      folio: c.folio,
+      proveedor: c.razonSocial,
+      tipoDoc: c.documento || c.tipoDoc,
+      tipoDocCode: c.tipoDoc || "",
+      monto: c.montoTotal || 0,
+      fechaEmision: c.fechaEmision || c.fechaCreacion || "",
+      fuente: "informe_compra",
+    });
+  }
+  for (const f of factclRows) {
+    if (!f.rut || !f.folio) continue;
+    const k = `${f.rut}|${f.folio}`;
+    if (candidatos.has(k)) continue;
+    candidatos.set(k, {
+      rut: f.rut,
+      folio: f.folio,
+      proveedor: f.razonSocial,
+      tipoDoc: f.documento || `Factura electrónica (cód. ${f.tipoDoc})`,
+      tipoDocCode: f.tipoDoc || "",
+      monto: f.monto || 0,
+      fechaEmision: f.fecha || f.fechaAceptacion || "",
+      fuente: "referencia",
+    });
+  }
+
+  const fantasmas = [];
+  for (const [k, row] of candidatos) {
+    if (enDefontana.has(k)) continue;
+    const fantasmaKey = `FCL|${k}|${row.tipoDocCode || row.tipoDoc}`;
+    fantasmas.push({
+      key: fantasmaKey,
+      rut: row.rut,
+      rutRaw: row.rut,
+      folio: row.folio,
+      folioRaw: row.folio,
+      tipoDoc: row.tipoDoc,
+      proveedor: row.proveedor,
+      condicion: "",
+      fechaFactura: row.fechaEmision,
+      vencimiento: "",
+      vencimientos: [],
+      cargoTotal: row.monto,
+      abonoTotal: 0,
+      saldo: row.monto,
+      pagada: false,
+      tieneCompra: false,
+      tieneEgreso: false,
+      movimientos: 0,
+      soloEnFactCL: true,
+      fuenteFantasma: row.fuente,
+      nReferencia: "",
+      ocFormapago: "",
+      ocTotal: 0,
+      ocEstado: "",
+      ocProveedor: "",
+      ocFecha: "",
+      ocCreadaPor: "",
+      ocSucursal: "",
+      tieneRefOC: false,
+      enHistoricoCredito: false,
+      fechaEmisionFact: row.fechaEmision,
+      fuenteFecha: row.fuente,
+      diasPlazo: null,
+      nominaPlazoSospechoso: false,
+      diasIngreso: null,
+      ingresoTardioSospechoso: false,
+      sospechosa: true,
+      alerta: "Aceptada en SII pero sin registro en Defontana",
+    });
+  }
+
+  return fantasmas;
+}
+
 // Utilidades para filtrar por estado de revisión
 export const REVIEW_STATES = {
   PENDIENTE: "PENDIENTE",

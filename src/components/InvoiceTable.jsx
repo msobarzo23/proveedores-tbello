@@ -2,17 +2,21 @@ import { useMemo, useState, useEffect } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 
-export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showEstadoFilter = false }) {
+export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showEstadoFilter = false, defaultShowPagadas = false }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
   const [filterEstado, setFilterEstado] = useState("TODAS");
+  const [showPagadas, setShowPagadas] = useState(defaultShowPagadas);
   const [sortCol, setSortCol] = useState("fechaFactura");
   const [sortDir, setSortDir] = useState("desc");
+
+  const pagadasCount = useMemo(() => rows.filter(r => r.pagada).length, [rows]);
 
   const filtered = useMemo(() => {
     const q = searchText.toLowerCase().trim();
     return rows.filter(r => {
+      if (!showPagadas && r.pagada) return false;
       if (q) {
         const hay = [r.rutRaw, r.rut, r.proveedor, r.folio, r.tipoDoc, r.nReferencia]
           .map(x => String(x ?? "").toLowerCase())
@@ -26,7 +30,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
       if (showEstadoFilter && filterEstado !== "TODAS" && r.estadoRev !== filterEstado) return false;
       return true;
     });
-  }, [rows, searchText, filterCond, filterAlert, filterEstado, showEstadoFilter]);
+  }, [rows, searchText, filterCond, filterAlert, filterEstado, showEstadoFilter, showPagadas]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -138,6 +142,40 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
             <option value="OK">OK</option>
             <option value="REVISADA">REVISADA</option>
           </select>
+        )}
+        {pagadasCount > 0 && (
+          <button
+            onClick={() => setShowPagadas(v => !v)}
+            title={showPagadas ? "Ocultar facturas con saldo cero" : "Incluir facturas ya pagadas"}
+            style={{
+              padding: "10px 14px",
+              background: showPagadas ? "rgba(34,197,94,0.15)" : "rgba(30,41,59,0.6)",
+              border: `1px solid ${showPagadas ? "rgba(34,197,94,0.35)" : "rgba(99,102,241,0.2)"}`,
+              borderRadius: 10,
+              color: showPagadas ? "#86efac" : "#cbd5e1",
+              fontSize: 12,
+              fontWeight: 600,
+              fontFamily: "inherit",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {showPagadas ? "✓" : "○"} Mostrar pagadas
+            <span style={{
+              background: "rgba(148,163,184,0.2)",
+              color: "#cbd5e1",
+              borderRadius: 8,
+              padding: "1px 6px",
+              fontSize: 10,
+              fontWeight: 700,
+              fontFamily: "monospace",
+            }}>
+              {pagadasCount.toLocaleString("es-CL")}
+            </span>
+          </button>
         )}
       </div>
 

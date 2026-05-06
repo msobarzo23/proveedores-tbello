@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
+import FantasmaTable from "./components/FantasmaTable";
 import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./components/Icons";
 import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
-import { buildCrossref, applyReviewState } from "./lib/crossref";
+import { buildCrossref, applyReviewState, findFactCLSinDefontana } from "./lib/crossref";
 import { loadHistoricoCredito } from "./lib/historico";
 
 export default function App() {
@@ -35,30 +36,41 @@ export default function App() {
 
       let updatedReviews = r.reviews || {};
 
-      // Auto-conciliar: facturas en REVISAR que ya no están en el nuevo Defontana
-      // se marcan REVISADA con nota "Conciliado". Solo corre al subir Defontana.
+      // Auto-conciliar: facturas en REVISAR que ya no aplican se marcan REVISADA
+      // con nota "Conciliado". Hay dos clases de keys con lógica distinta:
+      //   - Defontana (sin prefijo): se concilia si la factura ya no aparece
+      //     en el nuevo Defontana (resuelta por contabilidad).
+      //   - Fantasma (prefijo FCL|): se concilia si la factura SÍ apareció
+      //     en el nuevo Defontana — es decir, ya no es fantasma.
+      // Solo corre al subir Defontana.
       if (conConciliacion && r.defontana && r.defontana.length > 0) {
-        const keysNuevos = new Set(groupDefontanaByInvoice(r.defontana).map(inv => inv.key));
+        const grouped = groupDefontanaByInvoice(r.defontana);
+        const keysNuevos = new Set(grouped.map(inv => inv.key));
+        const fantasmaKeysNuevos = new Set(
+          findFactCLSinDefontana(grouped, r.compra || [], r.factcl || []).map(f => f.key)
+        );
         const previousByKey = new Map(enrichedRef.current.map(row => [row.key, row]));
         const autoConciliadas = [];
         updatedReviews = { ...updatedReviews };
         for (const [key, rev] of Object.entries(updatedReviews)) {
-          if (rev.estado === "REVISAR" && !keysNuevos.has(key)) {
-            const notaPrevia = rev.nota || "";
-            const nuevaNota = notaPrevia ? `${notaPrevia} · Conciliado` : "Conciliado";
-            // Capturar snapshot desde la fila enriquecida anterior (si existe),
-            // o preservar el snapshot ya guardado en la review.
-            const previous = previousByKey.get(key);
-            const snapshot = (previous ? snapshotFromRow(previous) : null) || rev.snapshot || null;
-            updatedReviews[key] = {
-              ...rev,
-              estado: "REVISADA",
-              nota: nuevaNota,
-              updated_at: new Date().toISOString(),
-              snapshot,
-            };
-            autoConciliadas.push({ key, nota: nuevaNota, snapshot });
-          }
+          if (rev.estado !== "REVISAR") continue;
+          const esFantasma = key.startsWith("FCL|");
+          const yaNoAplica = esFantasma
+            ? !fantasmaKeysNuevos.has(key)   // apareció en Defontana
+            : !keysNuevos.has(key);          // salió del Defontana
+          if (!yaNoAplica) continue;
+          const notaPrevia = rev.nota || "";
+          const nuevaNota = notaPrevia ? `${notaPrevia} · Conciliado` : "Conciliado";
+          const previous = previousByKey.get(key);
+          const snapshot = (previous ? snapshotFromRow(previous) : null) || rev.snapshot || null;
+          updatedReviews[key] = {
+            ...rev,
+            estado: "REVISADA",
+            nota: nuevaNota,
+            updated_at: new Date().toISOString(),
+            snapshot,
+          };
+          autoConciliadas.push({ key, nota: nuevaNota, snapshot });
         }
         if (autoConciliadas.length > 0) {
           Promise.all(
@@ -115,6 +127,9 @@ export default function App() {
     const realKeys = new Set(grouped.map(g => g.key));
     const phantoms = [];
     for (const [key, rev] of Object.entries(reviews || {})) {
+      // Las reviews con prefijo FCL| pertenecen a la pestaña "Sin registro";
+      // no las re-inyectamos al listado principal como phantoms.
+      if (key.startsWith("FCL|")) continue;
       if (realKeys.has(key)) continue;
       if (rev.estado !== "OK" && rev.estado !== "REVISADA") continue;
       const [rut = "", folio = "", tipoDoc = ""] = key.split("|");
@@ -165,6 +180,19 @@ export default function App() {
   const historicoRows = useMemo(
     () => enrichedAll.filter(r => r.estadoRev === "OK" || r.estadoRev === "REVISADA"),
     [enrichedAll]
+  );
+
+  // Fantasmas: aceptadas en SII (Fact.cl) que no están en Defontana.
+  // Usan keys con prefijo "FCL|" para no chocar con las reviews del flujo principal.
+  const fantasmaAll = useMemo(() => {
+    const grouped = groupDefontanaByInvoice(defontana);
+    const raw = findFactCLSinDefontana(grouped, compra, factcl);
+    return applyReviewState(raw, reviews);
+  }, [defontana, compra, factcl, reviews]);
+
+  const fantasmaPendientes = useMemo(
+    () => fantasmaAll.filter(r => r.estadoRev === "PENDIENTE" || r.estadoRev === "REVISAR"),
+    [fantasmaAll]
   );
 
   const sospechosasCount = useMemo(
@@ -223,6 +251,7 @@ export default function App() {
   const tabs = [
     { id: "carga", label: "Carga", icon: <IconUpload /> },
     { id: "principal", label: "Principal", icon: <IconSearch />, count: principalRows.length, alert: sospechosasCount },
+    { id: "fantasmas", label: "Sin registro", icon: <IconAlert />, count: fantasmaPendientes.length, color: fantasmaPendientes.length > 0 ? "#ef4444" : null },
     { id: "problemas", label: "Problemas", icon: <IconAlert />, count: problemasRows.length, color: problemasRows.length > 0 ? "#ef4444" : null },
     { id: "historico", label: "Histórico", icon: <IconRefresh />, count: historicoRows.length },
   ];
@@ -373,11 +402,18 @@ export default function App() {
             </span>
           )}
         </span>
-        {sospechosasCount > 0 && (
-          <span style={{ color: "#f87171", fontWeight: 600 }}>
-            ⚠️ {sospechosasCount} factura{sospechosasCount === 1 ? "" : "s"} sospechosa{sospechosasCount === 1 ? "" : "s"} (contado con OC asociada)
-          </span>
-        )}
+        <span style={{ display: "flex", gap: 14, alignItems: "center" }}>
+          {sospechosasCount > 0 && (
+            <span style={{ color: "#f87171", fontWeight: 600 }}>
+              ⚠️ {sospechosasCount} sospechosa{sospechosasCount === 1 ? "" : "s"} (contado con OC)
+            </span>
+          )}
+          {fantasmaPendientes.length > 0 && (
+            <span style={{ color: "#f87171", fontWeight: 600 }}>
+              ⚠️ {fantasmaPendientes.length} sin registro Defontana
+            </span>
+          )}
+        </span>
       </div>
 
       {/* Config panel */}
@@ -462,6 +498,9 @@ export default function App() {
         {tab === "principal" && (
           <InvoiceTable rows={principalRows} onMark={handleMark} onNote={handleNote} />
         )}
+        {tab === "fantasmas" && (
+          <FantasmaTable rows={fantasmaPendientes} onMark={handleMark} onNote={handleNote} />
+        )}
         {tab === "problemas" && (
           <>
             {problemasRows.length === 0 && (
@@ -486,7 +525,7 @@ export default function App() {
             <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
               Facturas ya procesadas (OK o REVISADA). Se ocultan del listado principal.
             </div>
-            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showEstadoFilter />
+            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showEstadoFilter defaultShowPagadas />
           </>
         )}
       </div>

@@ -16,7 +16,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
   const filtered = useMemo(() => {
     const q = searchText.toLowerCase().trim();
     return rows.filter(r => {
-      if (!showPagadas && r.pagada) return false;
+      if (showPagadas ? !r.pagada : r.pagada) return false;
       if (q) {
         const hay = [r.rutRaw, r.rut, r.proveedor, r.folio, r.tipoDoc, r.nReferencia]
           .map(x => String(x ?? "").toLowerCase())
@@ -146,7 +146,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
         {pagadasCount > 0 && (
           <button
             onClick={() => setShowPagadas(v => !v)}
-            title={showPagadas ? "Ocultar facturas con saldo cero" : "Incluir facturas ya pagadas"}
+            title={showPagadas ? "Volver a mostrar pendientes (saldo > 0)" : "Mostrar solo facturas pagadas (saldo 0)"}
             style={{
               padding: "10px 14px",
               background: showPagadas ? "rgba(34,197,94,0.15)" : "rgba(30,41,59,0.6)",

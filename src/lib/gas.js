@@ -12,6 +12,7 @@ const LS_KEYS = {
   FACTCL: "data_factcl",
   COMPRA: "data_compra",
   REVIEWS: "data_reviews",
+  REVIEWS_PENDING: "data_reviews_pending", // keys con cambios locales aún no confirmados por GAS
   TIMESTAMPS: "data_timestamps",
 };
 
@@ -59,6 +60,84 @@ const stampSave = (dataset) => {
 };
 
 export const getTimestamps = () => lsGet(LS_KEYS.TIMESTAMPS, {}) || {};
+
+// ─── REVIEWS PENDING SYNC ────────────────────────────────────────
+// Track de las keys cuyos cambios aún no se confirmaron en GAS. Si el POST
+// silenciosamente falla (timeout, cuota, CORS), la review queda sólo local.
+// loadAll() reintenta esta lista en background, así el estado no se pierde.
+const getPendingReviewKeys = () => {
+  const arr = lsGet(LS_KEYS.REVIEWS_PENDING, []);
+  return Array.isArray(arr) ? arr : [];
+};
+const setPendingReviewKeys = (arr) => lsSet(LS_KEYS.REVIEWS_PENDING, arr);
+const addPendingReviewKey = (key) => {
+  const p = getPendingReviewKeys();
+  if (!p.includes(key)) { p.push(key); setPendingReviewKeys(p); }
+};
+const removePendingReviewKey = (key) => {
+  setPendingReviewKeys(getPendingReviewKeys().filter(k => k !== key));
+};
+export const getPendingReviewsCount = () => getPendingReviewKeys().length;
+
+// Combina reviews de GAS con las locales preservando las locales que GAS no
+// tiene (probablemente saves que nunca llegaron a sincronizar) y las locales
+// más recientes que GAS (cambios hechos antes que GAS lo refleje).
+function mergeReviews(gasReviews, localReviews) {
+  const out = { ...(gasReviews || {}) };
+  for (const [key, lrev] of Object.entries(localReviews || {})) {
+    if (!lrev) continue;
+    const grev = out[key];
+    if (!grev) {
+      out[key] = lrev;
+    } else {
+      const lt = String(lrev.updated_at || "");
+      const gt = String(grev.updated_at || "");
+      if (lt && lt > gt) out[key] = lrev;
+    }
+  }
+  return out;
+}
+
+// Sincroniza en background cualquier review que esté local pero no en GAS, o
+// más reciente que GAS. No bloquea el render.
+async function syncPendingReviewsToGAS(url, mergedReviews, gasReviews) {
+  const candidates = new Set(getPendingReviewKeys());
+  for (const [key, mrev] of Object.entries(mergedReviews || {})) {
+    if (!mrev) continue;
+    const grev = (gasReviews || {})[key];
+    if (!grev) { candidates.add(key); continue; }
+    const mt = String(mrev.updated_at || "");
+    const gt = String(grev.updated_at || "");
+    if (mt && mt > gt) candidates.add(key);
+  }
+  if (!candidates.size) return;
+
+  const stillPending = [];
+  for (const key of candidates) {
+    const rev = mergedReviews[key];
+    if (!rev) continue;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: "save_review",
+          key,
+          estado: rev.estado,
+          nota: rev.nota || "",
+          snapshot: rev.snapshot || null,
+        }),
+      });
+      const text = await res.text();
+      const json = JSON.parse(text);
+      if (!json.ok) throw new Error(json.error || "GAS error");
+    } catch (e) {
+      console.warn(`[sync] Review ${key} sigue sin sincronizar:`, e.message);
+      stillPending.push(key);
+    }
+  }
+  setPendingReviewKeys(stillPending);
+}
 
 // ─── SAVE DATASETS ───────────────────────────────────────────────
 async function saveWithFallback(key, dataset, rows) {
@@ -117,18 +196,35 @@ export async function loadAll() {
         if (m) json = JSON.parse(m[0]); else throw new Error("GAS respuesta no JSON");
       }
       if (!json.ok) throw new Error(json.error || "Error al cargar");
-      // guardamos también en local para modo offline
+
+      // Combinar reviews de GAS con las locales para no perder cambios que
+      // nunca llegaron a sincronizar (e.g. POST falló en silencio). Sin esta
+      // mezcla, lsSet(REVIEWS, json.reviews) sobrescribía estados REVISADA/OK
+      // que el usuario marcó pero que nunca alcanzaron a guardarse en GAS,
+      // haciendo que las facturas reaparecieran como PENDIENTE.
+      const localReviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
+      const gasReviews = json.reviews || {};
+      const mergedReviews = mergeReviews(gasReviews, localReviews);
+
+      // Persistir todo en local (para modo offline) usando la versión mezclada.
       if (json.defontana) lsSet(LS_KEYS.DEFONTANA, json.defontana);
       if (json.oc) lsSet(LS_KEYS.OC, json.oc);
       if (json.factcl) lsSet(LS_KEYS.FACTCL, json.factcl);
       if (json.compra) lsSet(LS_KEYS.COMPRA, json.compra);
-      if (json.reviews) lsSet(LS_KEYS.REVIEWS, json.reviews);
+      lsSet(LS_KEYS.REVIEWS, mergedReviews);
+
+      // Sincronizar en background cualquier review local pendiente. No
+      // bloquea el render; si vuelve a fallar, queda en cola para el próximo
+      // loadAll.
+      syncPendingReviewsToGAS(url, mergedReviews, gasReviews)
+        .catch(e => console.warn("Error sincronizando reviews pendientes:", e));
+
       return {
         defontana: json.defontana || [],
         oc: json.oc || [],
         factcl: json.factcl || [],
         compra: json.compra || lsGet(LS_KEYS.COMPRA, []) || [],
-        reviews: json.reviews || {},
+        reviews: mergedReviews,
         source: "gas",
       };
     } catch (e) {
@@ -170,10 +266,12 @@ export async function saveReview(key, estado, nota = "", snapshot = null) {
     });
     const text = await res.text();
     const json = JSON.parse(text);
-    if (!json.ok) throw new Error(json.error);
+    if (!json.ok) throw new Error(json.error || "GAS error");
+    removePendingReviewKey(key);
     return { ok: true, source: "gas" };
   } catch (e) {
     console.warn("Review guardada sólo en local:", e.message);
+    addPendingReviewKey(key);
     return { ok: true, source: "local", warning: e.message };
   }
 }

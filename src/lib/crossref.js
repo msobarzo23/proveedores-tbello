@@ -289,8 +289,28 @@ export const REVIEW_STATES = {
 
 export function applyReviewState(invoices, reviews) {
   // reviews: { [key]: { estado, nota, updated_at } }
+  // Índice secundario por rut|folio (sin tipoDoc) para recuperar el estado
+  // si el texto de tipoDoc varió entre exports de Defontana (ej. "Factura
+  // Compra Electrónica" vs variantes con espacios/acentos distintos). Sólo
+  // para reviews del flujo principal — los fantasma (prefijo "FCL|") se
+  // excluyen porque su key tiene otra forma.
+  const byRutFolio = {};
+  for (const [k, rev] of Object.entries(reviews || {})) {
+    if (!rev || !k || String(k).startsWith("FCL|")) continue;
+    const parts = String(k).split("|");
+    if (parts.length < 2 || !parts[0] || !parts[1]) continue;
+    const idx = `${parts[0]}|${parts[1]}`;
+    const prev = byRutFolio[idx];
+    if (!prev || String(rev.updated_at || "") > String(prev.updated_at || "")) {
+      byRutFolio[idx] = rev;
+    }
+  }
+
   return invoices.map(inv => {
-    const rev = reviews?.[inv.key];
+    let rev = reviews?.[inv.key];
+    if (!rev && inv.rut && inv.folio && !String(inv.key || "").startsWith("FCL|")) {
+      rev = byRutFolio[`${inv.rut}|${inv.folio}`];
+    }
     return {
       ...inv,
       estadoRev: rev?.estado || REVIEW_STATES.PENDIENTE,

@@ -46,6 +46,10 @@ export default function App() {
       if (conConciliacion && r.defontana && r.defontana.length > 0) {
         const grouped = groupDefontanaByInvoice(r.defontana);
         const keysNuevos = new Set(grouped.map(inv => inv.key));
+        // Índice por rut|folio: si el nuevo Defontana trae la misma factura
+        // pero con un tipoDoc levemente distinto, NO debe contar como "salió"
+        // del Defontana — sigue ahí, sólo con otra etiqueta.
+        const rutFolioNuevos = new Set(grouped.map(inv => `${inv.rut}|${inv.folio}`));
         const fantasmaKeysNuevos = new Set(
           findFactCLSinDefontana(grouped, r.compra || [], r.factcl || []).map(f => f.key)
         );
@@ -55,9 +59,11 @@ export default function App() {
         for (const [key, rev] of Object.entries(updatedReviews)) {
           if (rev.estado !== "REVISAR") continue;
           const esFantasma = key.startsWith("FCL|");
+          const parts = String(key).split("|");
+          const rutFolio = parts.length >= 2 ? `${parts[0]}|${parts[1]}` : "";
           const yaNoAplica = esFantasma
             ? !fantasmaKeysNuevos.has(key)   // apareció en Defontana
-            : !keysNuevos.has(key);          // salió del Defontana
+            : (!keysNuevos.has(key) && !rutFolioNuevos.has(rutFolio));
           if (!yaNoAplica) continue;
           const notaPrevia = rev.nota || "";
           const nuevaNota = notaPrevia ? `${notaPrevia} · Conciliado` : "Conciliado";
@@ -125,12 +131,19 @@ export default function App() {
   const enrichedAll = useMemo(() => {
     const grouped = groupDefontanaByInvoice(defontana);
     const realKeys = new Set(grouped.map(g => g.key));
+    // Si la review apunta a la misma factura que ya está en el Defontana
+    // actual (mismo rut+folio aunque difiera tipoDoc), no la inyectamos como
+    // phantom — applyReviewState va a recuperar el estado por el fallback
+    // rut|folio. Evitamos duplicar filas.
+    const realRutFolio = new Set(grouped.map(g => `${g.rut}|${g.folio}`));
     const phantoms = [];
     for (const [key, rev] of Object.entries(reviews || {})) {
       // Las reviews con prefijo FCL| pertenecen a la pestaña "Sin registro";
       // no las re-inyectamos al listado principal como phantoms.
       if (key.startsWith("FCL|")) continue;
       if (realKeys.has(key)) continue;
+      const parts = String(key).split("|");
+      if (parts.length >= 2 && realRutFolio.has(`${parts[0]}|${parts[1]}`)) continue;
       if (rev.estado !== "OK" && rev.estado !== "REVISADA") continue;
       const [rut = "", folio = "", tipoDoc = ""] = key.split("|");
       const s = rev.snapshot || {};

@@ -408,7 +408,11 @@ export default function App() {
         alignItems: "center",
       }}>
         <span>
-          {source === "gas" ? "🟢 Sincronizado con Google Sheet" : "🟡 Modo local (navegador) · configura Google Sheet en ⚙️ para sincronizar"}
+          {source === "gas"
+            ? "🟢 Sincronizado con Google Sheet"
+            : source === "gas+pending"
+              ? "🟡 Conectado a Google Sheet · hay archivos pendientes de sincronizar (ve a Carga → Reintentar)"
+              : "🟡 Modo local (navegador) · configura Google Sheet en ⚙️ para sincronizar"}
           {historicoCount > 0 && (
             <span style={{ marginLeft: 12, color: "#94a3b8" }}>
               · Histórico crédito: {historicoCount.toLocaleString("es-CL")} proveedores

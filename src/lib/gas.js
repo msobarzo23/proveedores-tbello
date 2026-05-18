@@ -140,9 +140,23 @@ function computePendingSyncKeys(localReviews, gasReviews) {
   return candidates;
 }
 
-// Sube al GAS las reviews dadas, una por una. Acepta callback de progreso.
-// Devuelve { total, done, failed } y actualiza la cola de pendientes
-// explícitos con los keys que volvieron a fallar.
+// Tamaño del lote al usar save_reviews_batch. 250 da buen balance: payload
+// chico (~50-100KB), no se acerca al límite de 6 min de ejecución de GAS,
+// progreso visible para el usuario.
+const REVIEWS_BATCH_SIZE = 250;
+
+// Heurística para detectar que el GAS desplegado no soporta save_reviews_batch
+// (versión vieja del Code.gs). Cuando ocurre, caemos a la ruta uno-por-uno
+// para que el usuario siga sincronizando incluso si todavía no redepoyó GAS.
+function isUnknownActionError(err) {
+  const msg = (err && err.message) || String(err || "");
+  return /desconocida/i.test(msg) || /acci[óo]n/i.test(msg) || /unknown action/i.test(msg);
+}
+
+// Sube al GAS las reviews dadas. Por defecto usa save_reviews_batch para ir
+// 30-50x más rápido. Si el endpoint no existe (Code.gs viejo), cae automáticamente
+// a save_review uno-por-uno. onProgress recibe { done, total, failed } después
+// de cada batch (o de cada review en modo fallback).
 async function syncReviewKeys(url, keys, localReviews, onProgress) {
   const total = keys.length;
   let done = 0;
@@ -151,24 +165,66 @@ async function syncReviewKeys(url, keys, localReviews, onProgress) {
   if (!total) return { total: 0, done: 0, failed: 0, stillPending: [] };
 
   const stillPending = [];
-  for (const key of keys) {
-    const rev = (localReviews || {})[key];
-    if (!rev) { done++; if (onProgress) onProgress({ done, total, failed }); continue; }
-    try {
-      await postJSON(url, {
-        action: "save_review",
-        key,
-        estado: rev.estado,
-        nota: rev.nota || "",
-        snapshot: rev.snapshot || null,
-      });
-      done++;
-    } catch (e) {
-      console.warn(`[sync] Review ${key} sigue sin sincronizar:`, e.message);
-      failed++;
-      stillPending.push(key);
+  let batchSupported = true; // empezamos asumiendo que sí; primer error nos baja
+
+  for (let i = 0; i < keys.length; i += REVIEWS_BATCH_SIZE) {
+    const batchKeys = keys.slice(i, i + REVIEWS_BATCH_SIZE);
+    const batchReviews = batchKeys
+      .map(k => {
+        const rev = (localReviews || {})[k];
+        return rev ? {
+          key: k,
+          estado: rev.estado,
+          nota: rev.nota || "",
+          snapshot: rev.snapshot || null,
+        } : null;
+      })
+      .filter(Boolean);
+
+    let handled = false;
+
+    if (batchSupported) {
+      try {
+        await postJSON(url, { action: "save_reviews_batch", reviews: batchReviews });
+        done += batchReviews.length;
+        handled = true;
+      } catch (e) {
+        if (isUnknownActionError(e)) {
+          // GAS viejo: deshabilitar batch y reprocesar este lote per-item.
+          console.info("[sync] GAS sin save_reviews_batch, cayendo a modo uno-por-uno");
+          batchSupported = false;
+        } else {
+          // Falla real del batch: marcamos todo el lote como pendiente y seguimos.
+          console.warn(`[sync] Batch falló (${batchReviews.length} reviews):`, e.message);
+          failed += batchReviews.length;
+          for (const r of batchReviews) stillPending.push(r.key);
+          handled = true;
+        }
+      }
     }
-    if (onProgress) onProgress({ done, total, failed });
+
+    if (!handled) {
+      // Modo fallback (per-item) para este batch.
+      for (const r of batchReviews) {
+        try {
+          await postJSON(url, {
+            action: "save_review",
+            key: r.key,
+            estado: r.estado,
+            nota: r.nota,
+            snapshot: r.snapshot,
+          });
+          done++;
+        } catch (e) {
+          console.warn(`[sync] Review ${r.key} sigue sin sincronizar:`, e.message);
+          failed++;
+          stillPending.push(r.key);
+        }
+        if (onProgress) onProgress({ done, total, failed });
+      }
+    } else {
+      if (onProgress) onProgress({ done, total, failed });
+    }
   }
 
   // Mezclamos los que quedaron pendientes con los explícitos previos para no

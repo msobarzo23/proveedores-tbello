@@ -468,20 +468,22 @@ export default function App() {
         </span>
       </div>
 
-      {/* Banner de sincronización pendiente */}
-      {(pendingSyncCount > 0 || syncing || syncResult) && (
+      {/* Banner de sincronización: se muestra siempre que haya Google Sheet
+          configurado, incluso con 0 pendientes (es la confirmación visible
+          de que todo subió). En modo local puro queda oculto. */}
+      {(source === "gas" || source === "gas+pending" || syncing || syncResult) && (
         <div style={{
           padding: "8px 24px",
-          background: syncResult && !syncResult.failed && !syncResult.error
-            ? "rgba(34,197,94,0.08)"
-            : syncResult && (syncResult.failed || syncResult.error)
-              ? "rgba(239,68,68,0.08)"
+          background: syncResult && (syncResult.error || syncResult.failed)
+            ? "rgba(239,68,68,0.08)"
+            : (syncResult && !syncResult.failed && !syncResult.error) || (!syncing && pendingSyncCount === 0)
+              ? "rgba(34,197,94,0.06)"
               : "rgba(249,115,22,0.08)",
           borderBottom: `1px solid ${
-            syncResult && !syncResult.failed && !syncResult.error
-              ? "rgba(34,197,94,0.2)"
-              : syncResult && (syncResult.failed || syncResult.error)
-                ? "rgba(239,68,68,0.2)"
+            syncResult && (syncResult.error || syncResult.failed)
+              ? "rgba(239,68,68,0.2)"
+              : (syncResult && !syncResult.failed && !syncResult.error) || (!syncing && pendingSyncCount === 0)
+                ? "rgba(34,197,94,0.18)"
                 : "rgba(249,115,22,0.2)"
           }`,
           fontSize: 12,
@@ -547,11 +549,18 @@ export default function App() {
                   ✓ {syncResult.done.toLocaleString("es-CL")} revisión{syncResult.done === 1 ? "" : "es"} sincronizada{syncResult.done === 1 ? "" : "s"} al Google Sheet.
                 </span>
               )
-            ) : (
+            ) : pendingSyncCount > 0 ? (
               <span style={{ color: "#fdba74", fontWeight: 600 }}>
                 🟠 {pendingSyncCount.toLocaleString("es-CL")} revisión{pendingSyncCount === 1 ? "" : "es"} sin sincronizar al Google Sheet
                 <span style={{ color: "#fed7aa", fontWeight: 400, marginLeft: 6 }}>
                   · viven sólo en este navegador hasta que se suban
+                </span>
+              </span>
+            ) : (
+              <span style={{ color: "#86efac", fontWeight: 600 }}>
+                ✓ Todo sincronizado con Google Sheet
+                <span style={{ color: "#bbf7d0", fontWeight: 400, marginLeft: 6 }}>
+                  · 0 revisiones pendientes
                 </span>
               </span>
             )}

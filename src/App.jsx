@@ -3,7 +3,7 @@ import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
 import FantasmaTable from "./components/FantasmaTable";
 import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./components/Icons";
-import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL } from "./lib/gas";
+import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState, findFactCLSinDefontana } from "./lib/crossref";
 import { loadHistoricoCredito } from "./lib/historico";
@@ -23,6 +23,13 @@ export default function App() {
   const [source, setSource] = useState("local");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+
+  // Pendientes de sincronizar al Google Sheet (reviews que están en local pero
+  // no llegaron al Sheet). Se calcula en cada loadAll comparando contra GAS.
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(null); // { done, total, failed } | null
+  const [syncResult, setSyncResult] = useState(null); // { done, total, failed } | null
 
   // Ref con el último enrichedAll, para poder snapshotear datos de filas que
   // están a punto de desaparecer del nuevo Defontana al auto-conciliar.
@@ -93,6 +100,7 @@ export default function App() {
       setSource(r.source);
       setHistoricoCredito(h.set);
       setHistoricoCount(h.count);
+      setPendingSyncCount(r.pendingSyncCount || 0);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -247,6 +255,33 @@ export default function App() {
       console.error("Error guardando nota:", e);
     }
   }, []);
+
+  // Dispara la sincronización manual de reviews pendientes. Re-fetchea GAS,
+  // calcula qué falta, y las sube una por una mostrando progreso. Al terminar,
+  // refresca para que el conteo y el estado queden coherentes.
+  const handleForceSync = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncProgress({ done: 0, total: pendingSyncCount, failed: 0 });
+    setSyncResult(null);
+    try {
+      const r = await forceSyncPendingReviews((p) => setSyncProgress(p));
+      if (r.ok) {
+        setSyncResult({ done: r.done, total: r.total, failed: r.failed });
+      } else {
+        setSyncResult({ done: 0, total: 0, failed: 0, error: r.error || "Error desconocido" });
+      }
+    } catch (e) {
+      setSyncResult({ done: 0, total: 0, failed: 0, error: e.message });
+    } finally {
+      setSyncing(false);
+      setSyncProgress(null);
+      // Refrescar para recalcular pendientes desde GAS.
+      refresh();
+      // Limpiar el banner de resultado a los 8s.
+      setTimeout(() => setSyncResult(null), 8000);
+    }
+  }, [syncing, pendingSyncCount, refresh]);
 
   const saveGas = () => {
     setGasUrl(gasUrlInput);
@@ -432,6 +467,117 @@ export default function App() {
           )}
         </span>
       </div>
+
+      {/* Banner de sincronización pendiente */}
+      {(pendingSyncCount > 0 || syncing || syncResult) && (
+        <div style={{
+          padding: "8px 24px",
+          background: syncResult && !syncResult.failed && !syncResult.error
+            ? "rgba(34,197,94,0.08)"
+            : syncResult && (syncResult.failed || syncResult.error)
+              ? "rgba(239,68,68,0.08)"
+              : "rgba(249,115,22,0.08)",
+          borderBottom: `1px solid ${
+            syncResult && !syncResult.failed && !syncResult.error
+              ? "rgba(34,197,94,0.2)"
+              : syncResult && (syncResult.failed || syncResult.error)
+                ? "rgba(239,68,68,0.2)"
+                : "rgba(249,115,22,0.2)"
+          }`,
+          fontSize: 12,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 16,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+            {syncing ? (
+              <>
+                <span style={{
+                  display: "inline-block",
+                  width: 12, height: 12,
+                  border: "2px solid rgba(249,115,22,0.3)",
+                  borderTopColor: "#fb923c",
+                  borderRadius: "50%",
+                  animation: "spin 0.8s linear infinite",
+                }} />
+                <span style={{ color: "#fdba74", fontWeight: 600 }}>
+                  Sincronizando con Google Sheet…{" "}
+                  {syncProgress && (
+                    <span style={{ color: "#fed7aa", fontWeight: 500 }}>
+                      {syncProgress.done.toLocaleString("es-CL")} / {syncProgress.total.toLocaleString("es-CL")}
+                      {syncProgress.failed > 0 && (
+                        <span style={{ color: "#f87171", marginLeft: 6 }}>
+                          ({syncProgress.failed} con error)
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </span>
+                {syncProgress && syncProgress.total > 0 && (
+                  <div style={{
+                    flex: 1,
+                    height: 6,
+                    maxWidth: 320,
+                    background: "rgba(249,115,22,0.15)",
+                    borderRadius: 3,
+                    overflow: "hidden",
+                  }}>
+                    <div style={{
+                      width: `${Math.min(100, (syncProgress.done / syncProgress.total) * 100)}%`,
+                      height: "100%",
+                      background: "linear-gradient(90deg, #fb923c, #f97316)",
+                      transition: "width 0.2s",
+                    }} />
+                  </div>
+                )}
+              </>
+            ) : syncResult ? (
+              syncResult.error ? (
+                <span style={{ color: "#f87171", fontWeight: 600 }}>
+                  ⚠️ Error al sincronizar: {syncResult.error}
+                </span>
+              ) : syncResult.failed > 0 ? (
+                <span style={{ color: "#fcd34d", fontWeight: 600 }}>
+                  ⚠️ {syncResult.done.toLocaleString("es-CL")} sincronizadas, {syncResult.failed} fallaron.
+                  Puedes intentar de nuevo.
+                </span>
+              ) : (
+                <span style={{ color: "#86efac", fontWeight: 600 }}>
+                  ✓ {syncResult.done.toLocaleString("es-CL")} revisión{syncResult.done === 1 ? "" : "es"} sincronizada{syncResult.done === 1 ? "" : "s"} al Google Sheet.
+                </span>
+              )
+            ) : (
+              <span style={{ color: "#fdba74", fontWeight: 600 }}>
+                🟠 {pendingSyncCount.toLocaleString("es-CL")} revisión{pendingSyncCount === 1 ? "" : "es"} sin sincronizar al Google Sheet
+                <span style={{ color: "#fed7aa", fontWeight: 400, marginLeft: 6 }}>
+                  · viven sólo en este navegador hasta que se suban
+                </span>
+              </span>
+            )}
+          </div>
+          {!syncing && pendingSyncCount > 0 && (
+            <button
+              onClick={handleForceSync}
+              style={{
+                padding: "6px 14px",
+                background: "linear-gradient(135deg, #f97316, #ea580c)",
+                border: "none",
+                borderRadius: 8,
+                color: "#fff",
+                cursor: "pointer",
+                fontWeight: 600,
+                fontSize: 12,
+                fontFamily: "inherit",
+                whiteSpace: "nowrap",
+                boxShadow: "0 2px 8px rgba(249,115,22,0.3)",
+              }}
+            >
+              Forzar sincronización ahora
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Config panel */}
       {showConfig && (

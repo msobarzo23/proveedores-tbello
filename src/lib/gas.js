@@ -124,24 +124,36 @@ function mergeReviews(gasReviews, localReviews) {
   return out;
 }
 
-// Sincroniza en background cualquier review que esté local pero no en GAS, o
-// más reciente que GAS. No bloquea el render.
-async function syncPendingReviewsToGAS(url, mergedReviews, gasReviews) {
+// Calcula qué reviews del estado local todavía no están en GAS, o son más
+// recientes que las de GAS. Incluye también los que se marcaron como fallo
+// explícito en getPendingReviewKeys().
+function computePendingSyncKeys(localReviews, gasReviews) {
   const candidates = new Set(getPendingReviewKeys());
-  for (const [key, mrev] of Object.entries(mergedReviews || {})) {
-    if (!mrev) continue;
+  for (const [key, lrev] of Object.entries(localReviews || {})) {
+    if (!lrev) continue;
     const grev = (gasReviews || {})[key];
     if (!grev) { candidates.add(key); continue; }
-    const mt = String(mrev.updated_at || "");
+    const lt = String(lrev.updated_at || "");
     const gt = String(grev.updated_at || "");
-    if (mt && mt > gt) candidates.add(key);
+    if (lt && lt > gt) candidates.add(key);
   }
-  if (!candidates.size) return;
+  return candidates;
+}
+
+// Sube al GAS las reviews dadas, una por una. Acepta callback de progreso.
+// Devuelve { total, done, failed } y actualiza la cola de pendientes
+// explícitos con los keys que volvieron a fallar.
+async function syncReviewKeys(url, keys, localReviews, onProgress) {
+  const total = keys.length;
+  let done = 0;
+  let failed = 0;
+  if (onProgress) onProgress({ done: 0, total, failed: 0 });
+  if (!total) return { total: 0, done: 0, failed: 0, stillPending: [] };
 
   const stillPending = [];
-  for (const key of candidates) {
-    const rev = mergedReviews[key];
-    if (!rev) continue;
+  for (const key of keys) {
+    const rev = (localReviews || {})[key];
+    if (!rev) { done++; if (onProgress) onProgress({ done, total, failed }); continue; }
     try {
       await postJSON(url, {
         action: "save_review",
@@ -150,12 +162,69 @@ async function syncPendingReviewsToGAS(url, mergedReviews, gasReviews) {
         nota: rev.nota || "",
         snapshot: rev.snapshot || null,
       });
+      done++;
     } catch (e) {
       console.warn(`[sync] Review ${key} sigue sin sincronizar:`, e.message);
+      failed++;
       stillPending.push(key);
     }
+    if (onProgress) onProgress({ done, total, failed });
   }
-  setPendingReviewKeys(stillPending);
+
+  // Mezclamos los que quedaron pendientes con los explícitos previos para no
+  // perder fallos que vinieran de otra ruta (e.g. saveReview directo).
+  const remaining = new Set(getPendingReviewKeys());
+  for (const key of keys) remaining.delete(key);
+  for (const key of stillPending) remaining.add(key);
+  setPendingReviewKeys(Array.from(remaining));
+
+  return { total, done, failed, stillPending };
+}
+
+// Sincroniza en background cualquier review que esté local pero no en GAS, o
+// más reciente que GAS. No bloquea el render.
+async function syncPendingReviewsToGAS(url, localReviews, gasReviews) {
+  const candidates = Array.from(computePendingSyncKeys(localReviews, gasReviews));
+  if (!candidates.length) return;
+  await syncReviewKeys(url, candidates, localReviews);
+}
+
+// Cuenta cuántas reviews están pendientes de sincronizar sin pegarle a GAS.
+// Conservador: sólo cuenta los fallos explícitos. Para un conteo real
+// re-comparado con GAS, usar forceSyncPendingReviews o loadAll (que devuelve
+// pendingSyncCount).
+export const getExplicitPendingCount = () => getPendingReviewKeys().length;
+
+// Re-fetchea GAS para obtener el estado más fresco, calcula qué reviews
+// faltan, y las sube una por una llamando a onProgress({ done, total, failed }).
+// Es la versión "manual" que el usuario dispara con un botón en la UI.
+export async function forceSyncPendingReviews(onProgress) {
+  const url = getGasUrl();
+  if (!url) return { ok: false, error: "No hay URL de Google Sheet configurada." };
+
+  const localReviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
+
+  let gasReviews = {};
+  try {
+    const res = await fetch(`${url}?action=load_all`, { redirect: "follow" });
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch {
+      const m = text.match(/\{[\s\S]*\}/);
+      if (m) json = JSON.parse(m[0]);
+    }
+    if (json && json.ok) gasReviews = json.reviews || {};
+    else if (json && json.error) {
+      return { ok: false, error: "GAS respondió error: " + json.error };
+    }
+  } catch (e) {
+    // Si falla el fetch, igual intentamos subir los explícitos pendientes
+    console.warn("No pude leer GAS antes de sincronizar:", e.message);
+  }
+
+  const candidates = Array.from(computePendingSyncKeys(localReviews, gasReviews));
+  const result = await syncReviewKeys(url, candidates, localReviews, onProgress);
+  return { ok: true, ...result };
 }
 
 // ─── FETCH HELPERS ───────────────────────────────────────────────
@@ -310,9 +379,14 @@ export async function loadAll() {
       if (json.compra && !pending.has("compra")) lsSet(LS_KEYS.COMPRA, json.compra);
       lsSet(LS_KEYS.REVIEWS, mergedReviews);
 
+      // Conteo de reviews local-only / más-nuevas-que-GAS, para mostrarlo en
+      // la UI. Es el mismo cálculo que hace la sincronización automática.
+      const pendingSyncKeys = Array.from(computePendingSyncKeys(mergedReviews, gasReviews));
+
       // Sincronizar en background cualquier review local pendiente. No
       // bloquea el render; si vuelve a fallar, queda en cola para el próximo
-      // loadAll.
+      // loadAll. (El usuario puede acelerar esto con el botón "Forzar
+      // sincronización" en la UI, que usa forceSyncPendingReviews.)
       syncPendingReviewsToGAS(url, mergedReviews, gasReviews)
         .catch(e => console.warn("Error sincronizando reviews pendientes:", e));
 
@@ -323,11 +397,14 @@ export async function loadAll() {
         compra:    pending.has("compra")    ? (lsGet(LS_KEYS.COMPRA, []) || [])    : (json.compra || lsGet(LS_KEYS.COMPRA, []) || []),
         reviews: mergedReviews,
         source: pending.size > 0 ? "gas+pending" : "gas",
+        pendingSyncCount: pendingSyncKeys.length,
       };
     } catch (e) {
       console.warn("Fallback a localStorage:", e.message);
     }
   }
+  // Fallback puro local: el conteo de pendientes equivale al de fallos
+  // explícitos, porque no podemos comparar contra GAS sin conexión.
   return {
     defontana: lsGet(LS_KEYS.DEFONTANA, []) || [],
     oc: lsGet(LS_KEYS.OC, []) || [],
@@ -335,6 +412,7 @@ export async function loadAll() {
     compra: lsGet(LS_KEYS.COMPRA, []) || [],
     reviews: lsGet(LS_KEYS.REVIEWS, {}) || {},
     source: "local",
+    pendingSyncCount: getPendingReviewKeys().length,
   };
 }
 

@@ -3,7 +3,7 @@ import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
 import FantasmaTable from "./components/FantasmaTable";
 import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./components/Icons";
-import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews } from "./lib/gas";
+import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews, getPendingReviewsCount } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState, findFactCLSinDefontana } from "./lib/crossref";
 import { loadHistoricoCredito } from "./lib/historico";
@@ -131,6 +131,40 @@ export default function App() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Refresca el contador de pendientes en vivo. El conteo viene de loadAll
+  // (que compara local vs GAS), pero entremedio pueden aparecer pendientes
+  // nuevos por saves en curso (auto-conciliación, marcado rápido, fallos
+  // de red). Sin este poll, el banner se queda en "0 pendientes" aunque
+  // localStorage tenga keys sin sincronizar.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const live = getPendingReviewsCount();
+      setPendingSyncCount(prev => (live > prev ? live : prev));
+    }, 1500);
+    const onStorage = (e) => {
+      if (e.key === "data_reviews_pending" || e.key === "data_reviews") {
+        setPendingSyncCount(getPendingReviewsCount());
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => { clearInterval(id); window.removeEventListener("storage", onStorage); };
+  }, []);
+
+  // Si hay revisiones sin sincronizar al Google Sheet, avisar antes de cerrar
+  // la pestaña. Evita perder trabajo cuando la persona piensa que ya terminó
+  // pero quedan saves en curso o fallidos por sincronizar.
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (getPendingReviewsCount() > 0) {
+        e.preventDefault();
+        e.returnValue = "Hay revisiones sin sincronizar al Google Sheet. ¿Salir igual?";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
   // ─── Procesamiento: agrupar + cruzar + aplicar estado de revisión ──
   // Incluye filas "fantasma" para reviews OK/REVISADA cuya factura ya no está
   // en el Defontana actual (auto-conciliadas o eliminadas). Si la review tiene
@@ -230,6 +264,10 @@ export default function App() {
       ...prev,
       [row.key]: { estado, nota, updated_at: new Date().toISOString(), snapshot: snapshot || prev[row.key]?.snapshot || null },
     }));
+    // Pre-marcar pendiente en la UI antes incluso de iniciar el POST: saveReview
+    // ya escribió la marca en localStorage, queremos que el banner lo refleje
+    // de inmediato.
+    setPendingSyncCount(getPendingReviewsCount() + 1);
     try {
       await saveReview(row.key, estado, nota, snapshot);
     } catch (e) {
@@ -240,6 +278,9 @@ export default function App() {
         return next;
       });
       alert("Error guardando: " + e.message);
+    } finally {
+      // Refrescar el contador real (puede haber subido si falló, o bajado si OK).
+      setPendingSyncCount(getPendingReviewsCount());
     }
   }, []);
 
@@ -249,10 +290,13 @@ export default function App() {
       ...prev,
       [row.key]: { ...prev[row.key], nota, updated_at: new Date().toISOString(), snapshot: snapshot || prev[row.key]?.snapshot || null },
     }));
+    setPendingSyncCount(getPendingReviewsCount() + 1);
     try {
       await saveReview(row.key, row.estadoRev, nota, snapshot);
     } catch (e) {
       console.error("Error guardando nota:", e);
+    } finally {
+      setPendingSyncCount(getPendingReviewsCount());
     }
   }, []);
 

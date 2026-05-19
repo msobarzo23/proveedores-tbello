@@ -62,6 +62,27 @@ const lsSet = (k, v) => {
   try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
 };
 
+// Mutex en cadena de promesas. Cuando varios saveReview corren en paralelo
+// (e.g. auto-conciliación al subir nuevo Defontana, o el usuario marca varias
+// facturas rápido), todos hacen lsGet→modify→lsSet sobre data_reviews. Sin
+// serializar, las escrituras se pisan y se pierde el estado de la mayoría
+// localmente — y si alguno de los POSTs a GAS falla en silencio, la review
+// queda perdida en ambos lados sin entrar a data_reviews_pending. Este lock
+// envuelve TODA operación local read+modify+write sobre data_reviews y
+// data_reviews_pending para que sean atómicas.
+let __lsMutex = Promise.resolve();
+async function withLsLock(fn) {
+  const prev = __lsMutex;
+  let release;
+  __lsMutex = new Promise(r => { release = r; });
+  try { await prev; } catch {}
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 const stampSave = (dataset) => {
   const t = lsGet(LS_KEYS.TIMESTAMPS, {}) || {};
   t[dataset] = new Date().toISOString();
@@ -229,10 +250,13 @@ async function syncReviewKeys(url, keys, localReviews, onProgress) {
 
   // Mezclamos los que quedaron pendientes con los explícitos previos para no
   // perder fallos que vinieran de otra ruta (e.g. saveReview directo).
-  const remaining = new Set(getPendingReviewKeys());
-  for (const key of keys) remaining.delete(key);
-  for (const key of stillPending) remaining.add(key);
-  setPendingReviewKeys(Array.from(remaining));
+  // Bajo lock para no pisarse con saveReview corriendo en paralelo.
+  await withLsLock(() => {
+    const remaining = new Set(getPendingReviewKeys());
+    for (const key of keys) remaining.delete(key);
+    for (const key of stillPending) remaining.add(key);
+    setPendingReviewKeys(Array.from(remaining));
+  });
 
   return { total, done, failed, stillPending };
 }
@@ -420,24 +444,27 @@ export async function loadAll() {
       // mezcla, lsSet(REVIEWS, json.reviews) sobrescribía estados REVISADA/OK
       // que el usuario marcó pero que nunca alcanzaron a guardarse en GAS,
       // haciendo que las facturas reaparecieran como PENDIENTE.
-      const localReviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
       const gasReviews = json.reviews || {};
-      const mergedReviews = mergeReviews(gasReviews, localReviews);
 
-      // Persistir todo en local (para modo offline) usando la versión mezclada.
-      // Si un dataset está pendiente de sincronizar a GAS, NO lo sobrescribimos
-      // con la versión de GAS — los datos locales son más nuevos y aún no
-      // llegaron al sheet.
+      // Lock para evitar carrera con saveReview corriendo en paralelo: si
+      // entremedio del merge alguien marca una review, la escritura podría
+      // pisarla. Re-leemos localReviews adentro del lock para no usar una
+      // versión obsoleta.
+      const { mergedReviews, pendingSyncKeys } = await withLsLock(() => {
+        const localReviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
+        const merged = mergeReviews(gasReviews, localReviews);
+
+        const pending = new Set(getPendingDatasets());
+        if (json.defontana && !pending.has("defontana")) lsSet(LS_KEYS.DEFONTANA, json.defontana);
+        if (json.oc && !pending.has("oc")) lsSet(LS_KEYS.OC, json.oc);
+        if (json.factcl && !pending.has("factcl")) lsSet(LS_KEYS.FACTCL, json.factcl);
+        if (json.compra && !pending.has("compra")) lsSet(LS_KEYS.COMPRA, json.compra);
+        lsSet(LS_KEYS.REVIEWS, merged);
+
+        const syncKeys = Array.from(computePendingSyncKeys(merged, gasReviews));
+        return { mergedReviews: merged, pendingSyncKeys: syncKeys };
+      });
       const pending = new Set(getPendingDatasets());
-      if (json.defontana && !pending.has("defontana")) lsSet(LS_KEYS.DEFONTANA, json.defontana);
-      if (json.oc && !pending.has("oc")) lsSet(LS_KEYS.OC, json.oc);
-      if (json.factcl && !pending.has("factcl")) lsSet(LS_KEYS.FACTCL, json.factcl);
-      if (json.compra && !pending.has("compra")) lsSet(LS_KEYS.COMPRA, json.compra);
-      lsSet(LS_KEYS.REVIEWS, mergedReviews);
-
-      // Conteo de reviews local-only / más-nuevas-que-GAS, para mostrarlo en
-      // la UI. Es el mismo cálculo que hace la sincronización automática.
-      const pendingSyncKeys = Array.from(computePendingSyncKeys(mergedReviews, gasReviews));
 
       // Sincronizar en background cualquier review local pendiente. No
       // bloquea el render; si vuelve a fallar, queda en cola para el próximo
@@ -477,31 +504,51 @@ export async function loadAll() {
 // (proveedor, vencimiento, montos, etc.) cuando la factura desaparece
 // de Defontana en cargas posteriores.
 export async function saveReview(key, estado, nota = "", snapshot = null) {
-  const reviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
-  const existing = reviews[key] || {};
-  reviews[key] = {
-    estado,
-    nota,
-    updated_at: new Date().toISOString(),
-    snapshot: snapshot || existing.snapshot || null,
-  };
-  lsSet(LS_KEYS.REVIEWS, reviews);
+  // Escritura local atómica: si hay otros saveReview corriendo en paralelo,
+  // se serializan a través del mutex. Sin esto, lsGet+modify+lsSet desde
+  // múltiples saves se pisaban y data_reviews perdía la mayoría de las
+  // entradas localmente.
+  const savedSnapshot = await withLsLock(() => {
+    const reviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
+    const existing = reviews[key] || {};
+    const snap = snapshot || existing.snapshot || null;
+    reviews[key] = {
+      estado,
+      nota,
+      updated_at: new Date().toISOString(),
+      snapshot: snap,
+    };
+    lsSet(LS_KEYS.REVIEWS, reviews);
+    // Pre-marcamos esta key como pendiente: si la app se cierra antes de que
+    // el POST a GAS retorne, al reabrir el sistema sabe que falta sincronizar.
+    // Esto evita la ventana de "save reportó éxito antes del POST" en la que
+    // un cierre súbito perdía la review sin dejar rastro.
+    const pend = lsGet(LS_KEYS.REVIEWS_PENDING, []);
+    const arr = Array.isArray(pend) ? pend : [];
+    if (!arr.includes(key)) { arr.push(key); lsSet(LS_KEYS.REVIEWS_PENDING, arr); }
+    return snap;
+  });
 
   const url = getGasUrl();
-  if (!url) return { ok: true, source: "local" };
+  if (!url) {
+    // Sin GAS no hay nada que sincronizar; quitamos la marca pendiente.
+    await withLsLock(() => removePendingReviewKey(key));
+    return { ok: true, source: "local" };
+  }
   try {
     await postJSON(url, {
       action: "save_review",
       key,
       estado,
       nota,
-      snapshot: reviews[key].snapshot,
+      snapshot: savedSnapshot,
     });
-    removePendingReviewKey(key);
+    await withLsLock(() => removePendingReviewKey(key));
     return { ok: true, source: "gas" };
   } catch (e) {
     console.warn("Review guardada sólo en local:", e.message);
-    addPendingReviewKey(key);
+    // Ya quedó pre-marcada como pendiente arriba — sólo confirmamos.
+    await withLsLock(() => addPendingReviewKey(key));
     return { ok: true, source: "local", warning: e.message };
   }
 }

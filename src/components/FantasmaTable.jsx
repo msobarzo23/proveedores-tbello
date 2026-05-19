@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
+import { fmtCLP, fmtRut, fmtDate, STATE_COLORS, normalizeSearch, parseDate } from "../lib/ui";
 import { IconCheck, IconFlag, IconDone, IconSearch } from "./Icons";
 
 // Tabla específica para facturas aceptadas en SII (Fact.cl) que no aparecen
@@ -12,12 +12,17 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
   const [sortDir, setSortDir] = useState("desc");
 
   const filtered = useMemo(() => {
-    const q = searchText.toLowerCase().trim();
+    const qRaw = searchText.toLowerCase().trim();
+    const qNorm = normalizeSearch(searchText);
     return rows.filter(r => {
-      if (q) {
-        const hay = [r.rutRaw, r.rut, r.proveedor, r.folio, r.tipoDoc]
-          .map(x => String(x ?? "").toLowerCase())
-          .some(s => s.includes(q));
+      if (qRaw) {
+        const textos = [r.proveedor, r.tipoDoc]
+          .map(x => String(x ?? "").toLowerCase());
+        const codigos = [r.rutRaw, r.rut, r.folio, r.folioRaw]
+          .map(x => normalizeSearch(x));
+        const hay =
+          textos.some(s => s.includes(qRaw)) ||
+          (qNorm && codigos.some(s => s.includes(qNorm)));
         if (!hay) return false;
       }
       if (filterFuente !== "TODAS" && r.fuenteFantasma !== filterFuente) return false;
@@ -27,16 +32,38 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
+    const dir = sortDir === "asc" ? 1 : -1;
+    const isDateCol = sortCol === "fechaFactura";
+    const isNumericCol = sortCol === "folio";
     arr.sort((a, b) => {
-      const va = a[sortCol] ?? "";
-      const vb = b[sortCol] ?? "";
-      if (typeof va === "number" && typeof vb === "number") {
-        return sortDir === "asc" ? va - vb : vb - va;
+      const va = a[sortCol];
+      const vb = b[sortCol];
+      if (isDateCol) {
+        const ta = parseDate(va);
+        const tb = parseDate(vb);
+        const na = isNaN(ta), nb = isNaN(tb);
+        if (na && nb) return 0;
+        if (na) return 1;
+        if (nb) return -1;
+        return (ta - tb) * dir;
       }
-      const sa = String(va).toLowerCase();
-      const sb = String(vb).toLowerCase();
-      if (sa < sb) return sortDir === "asc" ? -1 : 1;
-      if (sa > sb) return sortDir === "asc" ? 1 : -1;
+      if (isNumericCol) {
+        const na = Number(String(va ?? "").replace(/[^\d.-]/g, ""));
+        const nb = Number(String(vb ?? "").replace(/[^\d.-]/g, ""));
+        const aOk = !isNaN(na) && va !== "" && va != null;
+        const bOk = !isNaN(nb) && vb !== "" && vb != null;
+        if (!aOk && !bOk) return 0;
+        if (!aOk) return 1;
+        if (!bOk) return -1;
+        return (na - nb) * dir;
+      }
+      if (typeof va === "number" && typeof vb === "number") {
+        return (va - vb) * dir;
+      }
+      const sa = String(va ?? "").toLowerCase();
+      const sb = String(vb ?? "").toLowerCase();
+      if (sa < sb) return -1 * dir;
+      if (sa > sb) return 1 * dir;
       return 0;
     });
     return arr;

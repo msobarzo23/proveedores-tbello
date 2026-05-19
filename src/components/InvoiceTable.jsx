@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import { fmtCLP, fmtRut, fmtDate, STATE_COLORS } from "../lib/ui";
+import { fmtCLP, fmtRut, fmtDate, STATE_COLORS, normalizeSearch, parseDate } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 
 export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showEstadoFilter = false, defaultShowPagadas = false }) {
@@ -14,13 +14,21 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
   const pagadasCount = useMemo(() => rows.filter(r => r.pagada).length, [rows]);
 
   const filtered = useMemo(() => {
-    const q = searchText.toLowerCase().trim();
+    const qRaw = searchText.toLowerCase().trim();
+    const qNorm = normalizeSearch(searchText);
     return rows.filter(r => {
       if (showPagadas ? !r.pagada : r.pagada) return false;
-      if (q) {
-        const hay = [r.rutRaw, r.rut, r.proveedor, r.folio, r.tipoDoc, r.nReferencia]
-          .map(x => String(x ?? "").toLowerCase())
-          .some(s => s.includes(q));
+      if (qRaw) {
+        // Match flexible: campos RUT/folio/OC se comparan también con la
+        // versión normalizada (sin puntos/guiones) para que "76.123.456-7"
+        // encuentre a "761234567" y viceversa.
+        const textos = [r.proveedor, r.tipoDoc]
+          .map(x => String(x ?? "").toLowerCase());
+        const codigos = [r.rutRaw, r.rut, r.folio, r.folioRaw, r.nReferencia]
+          .map(x => normalizeSearch(x));
+        const hay =
+          textos.some(s => s.includes(qRaw)) ||
+          (qNorm && codigos.some(s => s.includes(qNorm)));
         if (!hay) return false;
       }
       if (filterCond !== "TODAS" && r.condicion !== filterCond) return false;
@@ -34,16 +42,41 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
+    const dir = sortDir === "asc" ? 1 : -1;
+    const isDateCol = sortCol === "fechaFactura" || sortCol === "vencimiento";
+    const isNumericCol = sortCol === "folio" || sortCol === "nReferencia";
     arr.sort((a, b) => {
-      const va = a[sortCol] ?? "";
-      const vb = b[sortCol] ?? "";
-      if (typeof va === "number" && typeof vb === "number") {
-        return sortDir === "asc" ? va - vb : vb - va;
+      const va = a[sortCol];
+      const vb = b[sortCol];
+      // Fechas: parsear a timestamp.
+      if (isDateCol) {
+        const ta = parseDate(va);
+        const tb = parseDate(vb);
+        const na = isNaN(ta), nb = isNaN(tb);
+        if (na && nb) return 0;
+        if (na) return 1;   // valores sin fecha siempre al final
+        if (nb) return -1;
+        return (ta - tb) * dir;
       }
-      const sa = String(va).toLowerCase();
-      const sb = String(vb).toLowerCase();
-      if (sa < sb) return sortDir === "asc" ? -1 : 1;
-      if (sa > sb) return sortDir === "asc" ? 1 : -1;
+      // Folio/OC: ordenar numéricamente (vienen como string).
+      if (isNumericCol) {
+        const na = Number(String(va ?? "").replace(/[^\d.-]/g, ""));
+        const nb = Number(String(vb ?? "").replace(/[^\d.-]/g, ""));
+        const aOk = !isNaN(na) && va !== "" && va != null;
+        const bOk = !isNaN(nb) && vb !== "" && vb != null;
+        if (!aOk && !bOk) return 0;
+        if (!aOk) return 1;
+        if (!bOk) return -1;
+        return (na - nb) * dir;
+      }
+      // Numéricos puros (cargo/abono/saldo).
+      if (typeof va === "number" && typeof vb === "number") {
+        return (va - vb) * dir;
+      }
+      const sa = String(va ?? "").toLowerCase();
+      const sb = String(vb ?? "").toLowerCase();
+      if (sa < sb) return -1 * dir;
+      if (sa > sb) return 1 * dir;
       return 0;
     });
     return arr;

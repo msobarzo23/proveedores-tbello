@@ -43,6 +43,31 @@ export const fmtRut = (r) => {
   return `${withDots}-${dv}`;
 };
 
+// Normaliza un texto para búsqueda flexible: minúsculas y sin puntos,
+// guiones, espacios. Permite que "76.123.456-7" coincida con "761234567"
+// y que un folio "1.234" coincida con "1234".
+export const normalizeSearch = (s) =>
+  String(s ?? "").toLowerCase().replace(/[\s.\-]/g, "");
+
+// Parsea fechas en múltiples formatos para ordenar cronológicamente.
+// Soporta Date, ISO "2026-04-21..." y dd/MM/yyyy (formato Defontana).
+// Devuelve timestamp (ms) o NaN si no se reconoce.
+export const parseDate = (s) => {
+  if (!s) return NaN;
+  if (s instanceof Date) return s.getTime();
+  const str = String(s).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    const t = new Date(str).getTime();
+    if (!isNaN(t)) return t;
+  }
+  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) {
+    const [, d, mo, y] = m;
+    return new Date(Number(y), Number(mo) - 1, Number(d)).getTime();
+  }
+  return NaN;
+};
+
 export const STATE_COLORS = {
   PENDIENTE: { bg: "rgba(99,102,241,0.12)", border: "rgba(99,102,241,0.3)", fg: "#a5b4fc" },
   OK:        { bg: "rgba(34,197,94,0.12)",  border: "rgba(34,197,94,0.3)",  fg: "#22c55e" },

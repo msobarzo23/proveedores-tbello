@@ -35,6 +35,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
       if (filterAlert === "SOSPECHOSAS" && !r.sospechosa) return false;
       if (filterAlert === "CON_OC" && !r.tieneRefOC) return false;
       if (filterAlert === "SIN_OC" && r.tieneRefOC) return false;
+      if (filterAlert === "FACTORING" && !r.esFactoring) return false;
       if (showEstadoFilter && filterEstado !== "TODAS" && r.estadoRev !== filterEstado) return false;
       return true;
     });
@@ -168,6 +169,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
           <option value="SOSPECHOSAS">Sólo sospechosas</option>
           <option value="CON_OC">Con OC</option>
           <option value="SIN_OC">Sin OC</option>
+          <option value="FACTORING">Factoring / cedidas</option>
         </select>
         {showEstadoFilter && (
           <select value={filterEstado} onChange={e => setFilterEstado(e.target.value)} style={selectStyle}>
@@ -272,17 +274,24 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
 
 function InvoiceRow({ row, onMark, onNote, showProblems }) {
   const sc = STATE_COLORS[row.estadoRev] || STATE_COLORS.PENDIENTE;
+  // Factoring (sin otra sospecha) se señala en morado, no en rojo: es informativo.
+  const esFactoringNoSosp = row.esFactoring && !row.sospechosa;
   const rowBg = row.sospechosa
     ? "rgba(239,68,68,0.06)"
-    : "transparent";
-  const rowBorder = row.sospechosa ? "rgba(239,68,68,0.2)" : "rgba(99,102,241,0.05)";
+    : esFactoringNoSosp
+      ? "rgba(168,85,247,0.06)"
+      : "transparent";
 
   return (
     <tr
       title={row.alerta || ""}
       style={{
         background: rowBg,
-        borderLeft: row.sospechosa ? "3px solid #ef4444" : "3px solid transparent",
+        borderLeft: row.sospechosa
+          ? "3px solid #ef4444"
+          : esFactoringNoSosp
+            ? "3px solid #a855f7"
+            : "3px solid transparent",
         transition: "background 0.15s",
       }}
     >
@@ -359,9 +368,38 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
             solo reviews
           </span>
         )}
+        {row.esFactoring && (
+          <span
+            title={row.cedidaDe
+              ? `Factura cedida (factoring) — proveedor original: ${row.cedidaDe.proveedor || ""}${row.cedidaDe.rut ? " (" + fmtRut(row.cedidaDe.rut) + ")" : ""}`
+              : "Factura cedida a empresa de factoring"}
+            style={{
+              marginLeft: 6,
+              padding: "1px 5px",
+              borderRadius: 4,
+              fontSize: 9,
+              fontWeight: 700,
+              background: "rgba(168,85,247,0.15)",
+              color: "#c084fc",
+              border: "1px solid rgba(168,85,247,0.35)",
+            }}
+          >
+            Cedida
+          </span>
+        )}
       </td>
       <td style={{ ...tdStyle, fontFamily: "monospace" }}>{fmtRut(row.rut)}</td>
-      <td style={{ ...tdStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>{row.proveedor}</td>
+      <td
+        title={row.esFactoring && row.cedidaDe?.proveedor ? `${row.proveedor} ← cedida de ${row.cedidaDe.proveedor}` : row.proveedor}
+        style={{ ...tdStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}
+      >
+        {row.proveedor}
+        {row.esFactoring && row.cedidaDe?.proveedor && (
+          <span style={{ color: "#94a3b8", fontStyle: "italic", marginLeft: 6 }}>
+            ← {row.cedidaDe.proveedor}
+          </span>
+        )}
+      </td>
       <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right" }}>{fmtCLP(row.cargoTotal)}</td>
       <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right", color: "#22c55e" }}>{fmtCLP(row.abonoTotal)}</td>
       <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right", color: row.saldo < 0 ? "#f87171" : "#e2e8f0" }}>
@@ -421,7 +459,23 @@ function NoteCell({ row, onNote }) {
   };
 
   return (
-    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 4 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      {row.notaHeredada && (
+        <div
+          title={`Comentario de la factura original${row.cedidaDe?.proveedor ? " (" + row.cedidaDe.proveedor + ")" : ""} — se conserva intacto, no se edita aquí`}
+          style={{
+            fontSize: 10,
+            color: "#c084fc",
+            fontStyle: "italic",
+            lineHeight: 1.3,
+            whiteSpace: "normal",
+            maxWidth: 240,
+          }}
+        >
+          heredado: {row.notaHeredada}
+        </div>
+      )}
+      <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 4 }}>
       <input
         type="text"
         value={draft}
@@ -447,6 +501,7 @@ function NoteCell({ row, onNote }) {
       {saved && (
         <span style={{ fontSize: 10, color: "#22c55e", whiteSpace: "nowrap" }}>✓ guardado</span>
       )}
+      </div>
     </div>
   );
 }

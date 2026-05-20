@@ -42,7 +42,7 @@ function toDate(s) {
 
 const daysBetween = (a, b) => Math.round((b - a) / (1000 * 60 * 60 * 24));
 
-export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCreditoSet = new Set(), compraRows = []) {
+export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCreditoSet = new Set(), compraRows = [], factoringByRut = new Map(), reviews = {}) {
   // Indexar Reporte OC por Nro
   const ocByNro = new Map();
   for (const oc of ocRows) {
@@ -65,6 +65,28 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
     if (!c.rut || !c.folio) continue;
     compraByRutFolio.set(`${c.rut}|${c.folio}`, c);
   }
+
+  // ── Factoring: índice de reviews originales por folio ──────────────
+  // Cuando una factura se factoriza, la original (de su proveedor) desaparece y
+  // reaparece con el MISMO folio pero el RUT de la empresa de factoring. Para
+  // enlazar la cedida con su original (y heredar el comentario) indexamos las
+  // reviews existentes por folio. Ignoramos las fantasma (FCL|).
+  const reviewsByFolio = new Map();
+  for (const [rk, rev] of Object.entries(reviews || {})) {
+    if (!rev || String(rk).startsWith("FCL|")) continue;
+    const [rut = "", folio = "", tipoDoc = ""] = String(rk).split("|");
+    if (!folio) continue;
+    if (!reviewsByFolio.has(folio)) reviewsByFolio.set(folio, []);
+    reviewsByFolio.get(folio).push({ rut, tipoDoc, key: rk, nota: rev.nota || "", snapshot: rev.snapshot || null });
+  }
+  // Monto de comparación robusto: prioriza la deuda original (abono/cargo) sobre
+  // el saldo, que muta con pagos parciales.
+  const montoDe = (x) => Math.max(
+    Math.abs(x.abonoTotal || 0), Math.abs(x.cargoTotal || 0), Math.abs(x.saldo || 0)
+  );
+  // Facturas presentes en el Defontana actual (rut|folio): la detección
+  // automática solo aplica si la original YA NO está presente (fue factorizada).
+  const presentRutFolio = new Set(defontanaInvoices.map(d => `${d.rut}|${d.folio}`));
 
   return defontanaInvoices.map(inv => {
     const k = `${inv.rut}|${inv.folio}`;
@@ -90,7 +112,42 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
     const tieneRefOC = !!ocLinked;
     const isContado = inv.condicion === "2CONTADO";
     const isNomina  = inv.condicion === "1NOMINA";
-    const enHistoricoCredito = historicoCreditoSet.has(normalizeRut(inv.rut));
+    const rutNorm = normalizeRut(inv.rut);
+    const enHistoricoCredito = historicoCreditoSet.has(rutNorm);
+
+    // ── Factoring / cesión de crédito ──────────────────────────────
+    // Es "cedida" si su RUT está en la lista de factoring, o si comparte
+    // folio+monto con un review existente de OTRO RUT cuya factura ya no está
+    // en el Defontana (la original que fue factorizada). En ese caso heredamos
+    // proveedor original y comentario de la original (solo lectura en la UI).
+    let esFactoring = factoringByRut.has(rutNorm);
+    let factoringNombre = factoringByRut.get(rutNorm) || "";
+    let cedidaDe = null;
+    let notaHeredada = "";
+    let keyOriginal = "";
+    const montoInv = montoDe(inv);
+    const candidatos = (reviewsByFolio.get(inv.folio) || []).filter(c => {
+      if (normalizeRut(c.rut) === rutNorm) return false;             // distinto RUT
+      if (presentRutFolio.has(`${c.rut}|${inv.folio}`)) return false; // la original ya no debe estar
+      return true;
+    });
+    let matchOrig = candidatos.find(c => {
+      const montoOrig = montoDe(c.snapshot || {});
+      return montoOrig > 0 && Math.abs(montoOrig - montoInv) < 1;
+    });
+    // Fallback: si la original no tiene snapshot con monto pero es la única con
+    // ese folio, la tomamos igual (folios son por-emisor → poca ambigüedad).
+    if (!matchOrig && candidatos.length === 1 && !candidatos[0].snapshot) {
+      matchOrig = candidatos[0];
+    }
+    if (matchOrig) {
+      const sm = matchOrig.snapshot || {};
+      cedidaDe = { rut: matchOrig.rut, proveedor: sm.proveedor || "" };
+      notaHeredada = matchOrig.nota || "";
+      keyOriginal = matchOrig.key;
+      esFactoring = true;                                  // detección automática
+      if (!factoringNombre) factoringNombre = inv.proveedor; // el RUT actual es la factoring
+    }
 
     // Fecha de emisión real SII: preferimos el Informe de Compra (col Z),
     // porque es del documento actual. Si no está, caemos al archivo de
@@ -139,7 +196,10 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
       }
     }
 
-    const sospechosaContado = isContado && (tieneRefOC || enHistoricoCredito);
+    // Una factura cedida (factoring) llega sin OC y como asiento/CONTADO: no debe
+    // marcarse sospechosa por la regla contado/sin-OC. Las reglas de plazo NÓMINA
+    // e ingreso tardío sí se mantienen (son independientes de la cesión).
+    const sospechosaContado = isContado && (tieneRefOC || enHistoricoCredito) && !esFactoring;
     const sospechosa = sospechosaContado || nominaPlazoSospechoso || ingresoTardioSospechoso;
 
     const alertas = [];
@@ -149,6 +209,10 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
       } else {
         alertas.push(`Ingresada al CONTADO pero el proveedor aparece en el histórico de crédito — debería ser NÓMINA`);
       }
+    }
+    if (esFactoring) {
+      const orig = cedidaDe ? (cedidaDe.proveedor || cedidaDe.rut) : "";
+      alertas.push(`Factura cedida (factoring${factoringNombre ? " " + factoringNombre : ""})${orig ? ` — proveedor original ${orig}` : ""}`);
     }
     if (nominaPlazoSospechoso) alertas.push(motivoNomina);
     if (ingresoTardioSospechoso) alertas.push(motivoIngreso);
@@ -172,6 +236,11 @@ export function buildCrossref(defontanaInvoices, ocRows, factclRows, historicoCr
       nominaPlazoSospechoso,
       diasIngreso,
       ingresoTardioSospechoso,
+      esFactoring,
+      factoringNombre,
+      cedidaDe,
+      notaHeredada,
+      keyOriginal,
       sospechosa,
       alerta,
     };

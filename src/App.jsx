@@ -7,6 +7,7 @@ import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState, findFactCLSinDefontana } from "./lib/crossref";
 import { loadHistoricoCredito } from "./lib/historico";
+import { loadFactoring } from "./lib/factoring";
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -20,6 +21,7 @@ export default function App() {
   const [reviews, setReviews] = useState({});
   const [historicoCredito, setHistoricoCredito] = useState(new Set());
   const [historicoCount, setHistoricoCount] = useState(0);
+  const [factoringByRut, setFactoringByRut] = useState(new Map());
   const [source, setSource] = useState("local");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -39,7 +41,7 @@ export default function App() {
     setLoading(true);
     setErr(null);
     try {
-      const [r, h] = await Promise.all([loadAll(), loadHistoricoCredito()]);
+      const [r, h, fct] = await Promise.all([loadAll(), loadHistoricoCredito(), loadFactoring()]);
 
       let updatedReviews = r.reviews || {};
 
@@ -100,6 +102,7 @@ export default function App() {
       setSource(r.source);
       setHistoricoCredito(h.set);
       setHistoricoCount(h.count);
+      setFactoringByRut(fct.byRut);
       setPendingSyncCount(r.pendingSyncCount || 0);
     } catch (e) {
       setErr(e.message);
@@ -178,6 +181,16 @@ export default function App() {
     // phantom — applyReviewState va a recuperar el estado por el fallback
     // rut|folio. Evitamos duplicar filas.
     const realRutFolio = new Set(grouped.map(g => `${g.rut}|${g.folio}`));
+    // Para detectar facturas cedidas (factoring): folio → facturas actuales con
+    // ese folio. Si una review original reaparece bajo otro RUT con el mismo
+    // monto, es una cesión y la fila del factoring la representa.
+    const groupedByFolio = new Map();
+    for (const g of grouped) {
+      if (!g.folio) continue;
+      if (!groupedByFolio.has(g.folio)) groupedByFolio.set(g.folio, []);
+      groupedByFolio.get(g.folio).push(g);
+    }
+    const montoDe = (x) => Math.max(Math.abs(x.abonoTotal || 0), Math.abs(x.cargoTotal || 0), Math.abs(x.saldo || 0));
     const phantoms = [];
     for (const [key, rev] of Object.entries(reviews || {})) {
       // Las reviews con prefijo FCL| pertenecen a la pestaña "Sin registro";
@@ -186,6 +199,13 @@ export default function App() {
       if (realKeys.has(key)) continue;
       const parts = String(key).split("|");
       if (parts.length >= 2 && realRutFolio.has(`${parts[0]}|${parts[1]}`)) continue;
+      // Si esta review original fue cedida (su folio aparece en el Defontana
+      // actual bajo OTRO RUT con monto compatible), no la inyectamos como
+      // phantom: la fila del factoring la representa (evita fila duplicada).
+      const montoOrig = montoDe(rev.snapshot || {});
+      const cedida = (groupedByFolio.get(parts[1] || "") || []).some(g =>
+        g.rut !== parts[0] && montoOrig > 0 && Math.abs(montoDe(g) - montoOrig) < 1);
+      if (cedida) continue;
       if (rev.estado !== "OK" && rev.estado !== "REVISADA") continue;
       const [rut = "", folio = "", tipoDoc = ""] = key.split("|");
       const s = rev.snapshot || {};
@@ -212,9 +232,9 @@ export default function App() {
       });
     }
     if (!grouped.length && !phantoms.length) return [];
-    const crossed = buildCrossref([...grouped, ...phantoms], oc, factcl, historicoCredito, compra);
+    const crossed = buildCrossref([...grouped, ...phantoms], oc, factcl, historicoCredito, compra, factoringByRut, reviews);
     return applyReviewState(crossed, reviews);
-  }, [defontana, oc, factcl, compra, reviews, historicoCredito]);
+  }, [defontana, oc, factcl, compra, reviews, historicoCredito, factoringByRut]);
 
   // Mantener ref en sync para el auto-conciliador de refresh.
   useEffect(() => { enrichedRef.current = enrichedAll; }, [enrichedAll]);

@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS, normalizeSearch, parseDate } from "../lib/ui";
 import { IconCheck, IconFlag, IconDone, IconSearch } from "./Icons";
+import { exportFantasmasExcel, exportFantasmasPDF } from "../lib/export";
 
 // Tabla específica para facturas aceptadas en SII (Fact.cl) que no aparecen
 // en Defontana. Más simple que InvoiceTable: no tiene condición ni OC, sólo
@@ -162,6 +163,23 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
           <option value="informe_compra">Informe de Compra</option>
           <option value="referencia">Referencia</option>
         </select>
+
+        <button
+          onClick={() => exportFantasmasExcel(sorted)}
+          disabled={sorted.length === 0}
+          title="Descargar las facturas mostradas como planilla Excel (.xlsx)"
+          style={exportBtnStyle("#16a34a", sorted.length === 0)}
+        >
+          ⬇ Excel
+        </button>
+        <button
+          onClick={() => exportFantasmasPDF(sorted)}
+          disabled={sorted.length === 0}
+          title="Descargar las facturas mostradas como PDF (abre el diálogo de impresión: elige 'Guardar como PDF')"
+          style={exportBtnStyle("#dc2626", sorted.length === 0)}
+        >
+          ⬇ PDF
+        </button>
       </div>
 
       <div style={{
@@ -366,3 +384,17 @@ const selectStyle = {
   outline: "none",
   cursor: "pointer",
 };
+
+const exportBtnStyle = (color, disabled) => ({
+  padding: "10px 14px",
+  background: disabled ? "rgba(148,163,184,0.1)" : `${color}1f`,
+  border: `1px solid ${disabled ? "rgba(148,163,184,0.2)" : `${color}66`}`,
+  borderRadius: 10,
+  color: disabled ? "#64748b" : color,
+  fontSize: 13,
+  fontWeight: 600,
+  fontFamily: "inherit",
+  outline: "none",
+  cursor: disabled ? "not-allowed" : "pointer",
+  whiteSpace: "nowrap",
+});

@@ -9,6 +9,12 @@ import { exportFantasmasExcel, exportFantasmasPDF } from "../lib/export";
 export default function FantasmaTable({ rows, onMark, onNote }) {
   const [searchText, setSearchText] = useState("");
   const [filterFuente, setFilterFuente] = useState("TODAS");
+  // Filtro por estado de revisión. Por defecto mostramos las accionables
+  // (PENDIENTE + REVISAR). "RESUELTAS" deja ver las que ya marcaste como
+  // revisadas/descartadas para que NUNCA se pierdan de vista. "TODAS" muestra
+  // todo junto.
+  const [filterEstado, setFilterEstado] = useState("PENDIENTES");
+
   const [sortCol, setSortCol] = useState("fechaFactura");
   const [sortDir, setSortDir] = useState("desc");
 
@@ -27,9 +33,12 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
         if (!hay) return false;
       }
       if (filterFuente !== "TODAS" && r.fuenteFantasma !== filterFuente) return false;
+      const esAccionable = r.estadoRev === "PENDIENTE" || r.estadoRev === "REVISAR";
+      if (filterEstado === "PENDIENTES" && !esAccionable) return false;
+      if (filterEstado === "RESUELTAS" && esAccionable) return false;
       return true;
     });
-  }, [rows, searchText, filterFuente]);
+  }, [rows, searchText, filterFuente, filterEstado]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -75,7 +84,14 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
     else { setSortCol(col); setSortDir("asc"); }
   };
 
-  const totalMonto = useMemo(() => rows.reduce((s, r) => s + (r.cargoTotal || 0), 0), [rows]);
+  // Pendientes reales (accionables) sobre el total de fantasmas, independiente
+  // del filtro de Estado actual. Es lo que define la alerta roja.
+  const pendientesCount = useMemo(
+    () => rows.filter(r => r.estadoRev === "PENDIENTE" || r.estadoRev === "REVISAR").length,
+    [rows]
+  );
+  // Monto de lo que se está mostrando (respeta filtros).
+  const totalMonto = useMemo(() => filtered.reduce((s, r) => s + (r.cargoTotal || 0), 0), [filtered]);
 
   const cols = [
     ["fechaFactura", "Fecha emisión SII"],
@@ -105,9 +121,11 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
         <strong style={{ color: "#f87171" }}>Aceptadas en SII pero sin registro en Defontana.</strong>
         {" "}Son facturas que aparecen en los archivos de Facturación.cl (Informe de Compra
         o Referencia) pero <em>no</em> existen en el ledger Defontana cargado. Pueden ser
-        facturas que faltó ingresar a contabilidad. Marca <strong>Revisar</strong> para que
-        contabilidad las ingrese; cuando aparezcan en el próximo Defontana, salen
-        automáticamente de este listado.
+        facturas que faltó ingresar a contabilidad. Marca <strong>Revisar</strong> 🚩 para
+        pedir a contabilidad que la ingrese: la factura <strong>se queda en esta pestaña</strong> con
+        estado REVISAR (no se va a Problemas). Si la marcas como revisada o descartada, queda
+        guardada en el filtro <em>“Revisadas / descartadas”</em>. Cuando aparezca en el próximo
+        Defontana cargado, sale sola de este listado.
       </div>
 
       {/* Resumen */}
@@ -118,8 +136,9 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
         marginBottom: 14,
       }}>
         {[
-          { label: "Sin registro", value: rows.length.toLocaleString("es-CL"), color: rows.length > 0 ? "#ef4444" : "#64748b" },
-          { label: "Monto total", value: fmtCLP(totalMonto), color: "#f59e0b" },
+          { label: "Por revisar", value: pendientesCount.toLocaleString("es-CL"), color: pendientesCount > 0 ? "#ef4444" : "#64748b" },
+          { label: "Total fantasmas", value: rows.length.toLocaleString("es-CL"), color: "#94a3b8" },
+          { label: "Monto mostrado", value: fmtCLP(totalMonto), color: "#f59e0b" },
           { label: "Mostradas", value: filtered.length.toLocaleString("es-CL"), color: "#a5b4fc" },
         ].map((s, i) => (
           <div key={i} style={{
@@ -158,6 +177,11 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
             }}
           />
         </div>
+        <select value={filterEstado} onChange={e => setFilterEstado(e.target.value)} style={selectStyle}>
+          <option value="PENDIENTES">Por revisar (pendientes + bandera)</option>
+          <option value="RESUELTAS">Revisadas / descartadas</option>
+          <option value="TODAS">Todos los estados</option>
+        </select>
         <select value={filterFuente} onChange={e => setFilterFuente(e.target.value)} style={selectStyle}>
           <option value="TODAS">Todas las fuentes</option>
           <option value="informe_compra">Informe de Compra</option>

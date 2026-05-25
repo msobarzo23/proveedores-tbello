@@ -735,7 +735,7 @@ export default function App() {
           <InvoiceTable rows={principalRows} onMark={handleMark} onNote={handleNote} />
         )}
         {tab === "fantasmas" && (
-          <FantasmaTable rows={fantasmaPendientes} onMark={handleMark} onNote={handleNote} />
+          <FantasmaTable rows={fantasmaAll} onMark={handleMark} onNote={handleNote} />
         )}
         {tab === "problemas" && (
           <>

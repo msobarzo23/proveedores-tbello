@@ -45,34 +45,89 @@ export default function App() {
 
       let updatedReviews = r.reviews || {};
 
-      // Auto-conciliar: facturas en REVISAR que ya no aplican se marcan REVISADA
-      // con nota "Conciliado". Hay dos clases de keys con lógica distinta:
-      //   - Defontana (sin prefijo): se concilia si la factura ya no aparece
-      //     en el nuevo Defontana (resuelta por contabilidad).
-      //   - Fantasma (prefijo FCL|): se concilia si la factura SÍ apareció
-      //     en el nuevo Defontana — es decir, ya no es fantasma.
-      // Solo corre al subir Defontana.
-      if (conConciliacion && r.defontana && r.defontana.length > 0) {
+      // Hay dos auto-conciliaciones distintas con gates distintos:
+      //
+      // (1) Migración fantasma → Defontana: SIEMPRE que haya Defontana cargado.
+      //     Si una review FCL| ya no es fantasma porque la factura apareció en
+      //     el ledger, llevamos la decisión (estado + comentario) a la nueva
+      //     key Defontana — si no, la factura reaparecería en Principal como
+      //     PENDIENTE y se perdería el trabajo de la persona. Es seguro correr
+      //     siempre porque solo migra reviews ya hechas, es idempotente y la
+      //     review FCL| original se deja intacta como auditoría.
+      //
+      // (2) Conciliación de REVISAR Defontana que desapareció: SOLO al subir
+      //     un Defontana nuevo (conConciliacion=true). Sin ese gate no podemos
+      //     distinguir "no se cargó" de "ya no existe".
+      const haveDefontana = r.defontana && r.defontana.length > 0;
+      if (haveDefontana) {
         const grouped = groupDefontanaByInvoice(r.defontana);
         const keysNuevos = new Set(grouped.map(inv => inv.key));
         // Índice por rut|folio: si el nuevo Defontana trae la misma factura
         // pero con un tipoDoc levemente distinto, NO debe contar como "salió"
         // del Defontana — sigue ahí, sólo con otra etiqueta.
         const rutFolioNuevos = new Set(grouped.map(inv => `${inv.rut}|${inv.folio}`));
+        // Mapa rut|folio → fila Defontana actual, para resolver la nueva key
+        // canónica al migrar fantasmas que reaparecieron en el ledger.
+        const invByRutFolio = new Map();
+        for (const inv of grouped) invByRutFolio.set(`${inv.rut}|${inv.folio}`, inv);
         const fantasmaKeysNuevos = new Set(
           findFactCLSinDefontana(grouped, r.compra || [], r.factcl || []).map(f => f.key)
         );
         const previousByKey = new Map(enrichedRef.current.map(row => [row.key, row]));
         const autoConciliadas = [];
         updatedReviews = { ...updatedReviews };
-        for (const [key, rev] of Object.entries(updatedReviews)) {
-          if (rev.estado !== "REVISAR") continue;
+        // Snapshot inicial de las keys para iterar sin pisarse con las nuevas
+        // entradas que vayamos creando (migración fantasma → Defontana).
+        const entries = Object.entries(updatedReviews);
+        for (const [key, rev] of entries) {
           const esFantasma = key.startsWith("FCL|");
+
+          if (esFantasma) {
+            // (1) Migración fantasma → Defontana. Siempre se evalúa.
+            if (fantasmaKeysNuevos.has(key)) continue; // sigue siendo fantasma
+            // Sólo migramos reviews con decisión hecha; PENDIENTE no tiene
+            // nada que preservar.
+            if (rev.estado !== "REVISAR" && rev.estado !== "REVISADA" && rev.estado !== "OK") {
+              continue;
+            }
+            // Resolver la nueva key Defontana por RUT+Folio. Formato fantasma:
+            // FCL|rut|folio|tipoDocCode.
+            const parts = key.split("|");
+            const rut = parts[1] || "";
+            const folio = parts[2] || "";
+            const newInv = invByRutFolio.get(`${rut}|${folio}`);
+            if (!newInv) continue;
+            const newKey = newInv.key;
+            // No pisar si la nueva key ya tiene una review más reciente.
+            const existente = updatedReviews[newKey];
+            if (existente && String(existente.updated_at || "") >= String(rev.updated_at || "")) {
+              continue;
+            }
+            let nuevoEstado = rev.estado;
+            let nuevaNota = rev.nota || "";
+            if (rev.estado === "REVISAR") {
+              nuevoEstado = "REVISADA";
+              nuevaNota = nuevaNota ? `${nuevaNota} · Conciliado` : "Conciliado";
+            }
+            const snapshot = snapshotFromRow(newInv);
+            updatedReviews[newKey] = {
+              estado: nuevoEstado,
+              nota: nuevaNota,
+              updated_at: new Date().toISOString(),
+              snapshot,
+            };
+            autoConciliadas.push({ key: newKey, estado: nuevoEstado, nota: nuevaNota, snapshot });
+            continue;
+          }
+
+          // (2) Conciliación REVISAR Defontana → REVISADA. Sólo con Defontana
+          // recién subido, porque sin eso no podemos asumir que "no está" en
+          // el ledger.
+          if (!conConciliacion) continue;
+          if (rev.estado !== "REVISAR") continue;
           const parts = String(key).split("|");
           const rutFolio = parts.length >= 2 ? `${parts[0]}|${parts[1]}` : "";
-          const yaNoAplica = esFantasma
-            ? !fantasmaKeysNuevos.has(key)   // apareció en Defontana
-            : (!keysNuevos.has(key) && !rutFolioNuevos.has(rutFolio));
+          const yaNoAplica = !keysNuevos.has(key) && !rutFolioNuevos.has(rutFolio);
           if (!yaNoAplica) continue;
           const notaPrevia = rev.nota || "";
           const nuevaNota = notaPrevia ? `${notaPrevia} · Conciliado` : "Conciliado";
@@ -85,11 +140,11 @@ export default function App() {
             updated_at: new Date().toISOString(),
             snapshot,
           };
-          autoConciliadas.push({ key, nota: nuevaNota, snapshot });
+          autoConciliadas.push({ key, estado: "REVISADA", nota: nuevaNota, snapshot });
         }
         if (autoConciliadas.length > 0) {
           Promise.all(
-            autoConciliadas.map(({ key, nota, snapshot }) => saveReview(key, "REVISADA", nota, snapshot))
+            autoConciliadas.map(({ key, estado, nota, snapshot }) => saveReview(key, estado, nota, snapshot))
           ).catch(e => console.warn("Error guardando auto-conciliación:", e));
         }
       }

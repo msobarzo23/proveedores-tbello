@@ -49,11 +49,15 @@ export default function App() {
       //
       // (1) Migración fantasma → Defontana: SIEMPRE que haya Defontana cargado.
       //     Si una review FCL| ya no es fantasma porque la factura apareció en
-      //     el ledger, llevamos la decisión (estado + comentario) a la nueva
-      //     key Defontana — si no, la factura reaparecería en Principal como
-      //     PENDIENTE y se perdería el trabajo de la persona. Es seguro correr
-      //     siempre porque solo migra reviews ya hechas, es idempotente y la
-      //     review FCL| original se deja intacta como auditoría.
+      //     el ledger, llevamos su COMENTARIO a la nueva key Defontana y la
+      //     dejamos en PENDIENTE. El fin de la app es controlar el ingreso de
+      //     facturas desde contabilidad, así que cuando una fantasma recién se
+      //     contabiliza NO la archivamos en Histórico: vuelve a Principal para
+      //     que se controle ese ingreso, conservando el comentario heredado
+      //     como contexto. Es seguro correr siempre porque solo migra reviews
+      //     ya trabajadas, es idempotente (no pisa una review más reciente en
+      //     la nueva key) y la review FCL| original se deja intacta como
+      //     auditoría.
       //
       // (2) Conciliación de REVISAR Defontana que desapareció: SOLO al subir
       //     un Defontana nuevo (conConciliacion=true). Sin ese gate no podemos
@@ -85,8 +89,10 @@ export default function App() {
           if (esFantasma) {
             // (1) Migración fantasma → Defontana. Siempre se evalúa.
             if (fantasmaKeysNuevos.has(key)) continue; // sigue siendo fantasma
-            // Sólo migramos reviews con decisión hecha; PENDIENTE no tiene
-            // nada que preservar.
+            // Sólo migramos reviews que la persona ya trabajó (REVISAR/
+            // REVISADA/OK): son las que traen un comentario de cierre que vale
+            // la pena heredar. Una PENDIENTE pura aparecerá igual en Principal
+            // por sí sola, sin nada que preservar.
             if (rev.estado !== "REVISAR" && rev.estado !== "REVISADA" && rev.estado !== "OK") {
               continue;
             }
@@ -103,12 +109,12 @@ export default function App() {
             if (existente && String(existente.updated_at || "") >= String(rev.updated_at || "")) {
               continue;
             }
-            let nuevoEstado = rev.estado;
-            let nuevaNota = rev.nota || "";
-            if (rev.estado === "REVISAR") {
-              nuevoEstado = "REVISADA";
-              nuevaNota = nuevaNota ? `${nuevaNota} · Conciliado` : "Conciliado";
-            }
+            // La factura entró a contabilidad: la llevamos a Principal como
+            // PENDIENTE para controlar el ingreso, conservando el comentario
+            // que traía de "Sin registro". (Antes se cerraba a REVISADA/OK y
+            // caía directo a Histórico, saltándose el control del ingreso.)
+            const nuevoEstado = "PENDIENTE";
+            const nuevaNota = rev.nota || "";
             const snapshot = snapshotFromRow(newInv);
             updatedReviews[newKey] = {
               estado: nuevoEstado,

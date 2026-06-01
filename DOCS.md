@@ -86,7 +86,7 @@ Toda la lógica está en `src/lib/crossref.js → buildCrossref`.
 Al subir un Defontana nuevo:
 
 - Facturas en `REVISAR` que **desaparecieron** del Defontana ⇒ se marcan `REVISADA` con nota "Conciliado".
-- Fantasmas (`FCL|…`) que **aparecieron** en el nuevo Defontana ⇒ se marcan `REVISADA` (ya no son fantasma).
+- Fantasmas (`FCL|…`) que **aparecieron** en el nuevo Defontana (ya se contabilizaron) ⇒ pasan a la pestaña **Principal** como `PENDIENTE`, conservando el comentario que traían de "Sin registro". Así el ingreso desde contabilidad se controla; **no** se archivan en Histórico. La review `FCL|` original queda intacta como auditoría.
 
 El estado anterior queda en `snapshot` para preservar proveedor/montos cuando la factura ya no esté en el ledger.
 

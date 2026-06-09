@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS, normalizeSearch, parseDate } from "../lib/ui";
 import { IconCheck, IconFlag, IconDone, IconSearch } from "./Icons";
 import { exportFantasmasExcel, exportFantasmasPDF } from "../lib/export";
@@ -326,11 +326,15 @@ function FantasmaRow({ row, onMark, onNote }) {
 function NoteCell({ row, onNote }) {
   const [draft, setDraft] = useState(row.nota || "");
   const [saved, setSaved] = useState(false);
+  // Último valor enviado: evita el doble guardado cuando Enter dispara save()
+  // y el blur inmediato lo vuelve a disparar antes de que row.nota se actualice.
+  const lastSentRef = useRef(null);
 
   useEffect(() => { setDraft(row.nota || ""); }, [row.nota]);
 
   const save = async () => {
-    if (draft === (row.nota || "")) return;
+    if (draft === (row.nota || "") || draft === lastSentRef.current) return;
+    lastSentRef.current = draft;
     await onNote(row, draft);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);

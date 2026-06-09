@@ -451,6 +451,8 @@ export default function App() {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 10,
         position: "sticky",
         top: 0,
         zIndex: 100,
@@ -481,9 +483,10 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <div style={{
             display: "flex",
+            flexWrap: "wrap",
             background: "rgba(30,41,59,0.8)",
             borderRadius: 10,
             padding: 3,
@@ -546,16 +549,18 @@ export default function App() {
             fontSize: 14,
           }}>⚙️</button>
 
-          <button onClick={() => refresh()} title="Refrescar" style={{
+          <button onClick={() => refresh()} disabled={loading} title={loading ? "Cargando..." : "Refrescar"} style={{
             background: "rgba(30,41,59,0.8)",
             border: "1px solid rgba(99,102,241,0.15)",
             borderRadius: 8,
             padding: 8,
-            cursor: "pointer",
-            color: "#94a3b8",
+            cursor: loading ? "wait" : "pointer",
+            color: loading ? "#6366f1" : "#94a3b8",
             display: "flex",
           }}>
-            <IconRefresh />
+            <span style={{ display: "flex", animation: loading ? "spin 0.9s linear infinite" : "none" }}>
+              <IconRefresh />
+            </span>
           </button>
         </div>
       </div>
@@ -586,7 +591,7 @@ export default function App() {
         <span style={{ display: "flex", gap: 14, alignItems: "center" }}>
           {sospechosasCount > 0 && (
             <span style={{ color: "#f87171", fontWeight: 600 }}>
-              ⚠️ {sospechosasCount} sospechosa{sospechosasCount === 1 ? "" : "s"} (contado con OC)
+              ⚠️ {sospechosasCount} factura{sospechosasCount === 1 ? "" : "s"} sospechosa{sospechosasCount === 1 ? "" : "s"}
             </span>
           )}
           {fantasmaPendientes.length > 0 && (
@@ -797,7 +802,7 @@ export default function App() {
       <div style={{ padding: 24, maxWidth: 1600, margin: "0 auto" }}>
         {tab === "carga" && <CargaTab onDataChanged={refresh} />}
         {tab === "principal" && (
-          <InvoiceTable rows={principalRows} onMark={handleMark} onNote={handleNote} />
+          <InvoiceTable rows={principalRows} onMark={handleMark} onNote={handleNote} exportName="principal" />
         )}
         {tab === "fantasmas" && (
           <FantasmaTable rows={fantasmaAll} onMark={handleMark} onNote={handleNote} />
@@ -817,7 +822,7 @@ export default function App() {
               </div>
             )}
             {problemasRows.length > 0 && (
-              <InvoiceTable rows={problemasRows} onMark={handleMark} onNote={handleNote} showProblems />
+              <InvoiceTable rows={problemasRows} onMark={handleMark} onNote={handleNote} showProblems exportName="problemas" />
             )}
           </>
         )}
@@ -826,7 +831,7 @@ export default function App() {
             <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
               Facturas ya procesadas (OK o REVISADA). Se ocultan del listado principal.
             </div>
-            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showEstadoFilter defaultShowPagadas />
+            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showEstadoFilter defaultShowPagadas exportName="historico" />
           </>
         )}
       </div>

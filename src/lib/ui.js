@@ -25,11 +25,11 @@ export const fmtDate = (s) => {
     return `${pad(s.getDate())}/${pad(s.getMonth() + 1)}/${s.getFullYear()}`;
   }
   const str = String(s).trim();
-  // ISO 8601 o similar con "T"
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
-    const d = new Date(str);
-    if (!isNaN(d)) return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
-  }
+  // ISO 8601: tomamos la parte de fecha como fecha de calendario, sin pasar
+  // por new Date(). new Date("2026-04-21") la interpreta como medianoche UTC
+  // y en Chile (UTC-4) la mostraba como 20/04 — un día menos.
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
   return str;
 };
 
@@ -56,11 +56,13 @@ export const parseDate = (s) => {
   if (!s) return NaN;
   if (s instanceof Date) return s.getTime();
   const str = String(s).trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
-    const t = new Date(str).getTime();
-    if (!isNaN(t)) return t;
+  // ISO: construir la fecha como local para que ordene consistente con
+  // dd/MM/yyyy (new Date("yyyy-MM-dd") sería medianoche UTC, no local).
+  let m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
   }
-  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (m) {
     const [, d, mo, y] = m;
     return new Date(Number(y), Number(mo) - 1, Number(d)).getTime();

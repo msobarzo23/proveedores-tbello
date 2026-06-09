@@ -70,6 +70,61 @@ export function exportFantasmasExcel(rows) {
   XLSX.writeFile(wb, `sin-registro-defontana_${hoyParaArchivo()}.xlsx`);
 }
 
+// ─── Excel del listado principal (Principal / Problemas / Histórico) ─────
+// Exporta las filas tal como están filtradas y ordenadas en pantalla.
+export function exportFacturasExcel(rows, nombre = "facturas") {
+  const encabezados = [
+    "Condición",
+    "Fecha ingreso",
+    "Vencimiento",
+    "Documento",
+    "Folio",
+    "RUT",
+    "Proveedor",
+    "Cargo",
+    "Abono",
+    "Saldo",
+    "OC",
+    "Forma pago OC",
+    "Alerta",
+    "Comentario",
+    "Estado",
+  ];
+
+  const filas = rows.map((r) => [
+    r.condicion === "1NOMINA" ? "NÓMINA" : r.condicion === "2CONTADO" ? "CONTADO" : "",
+    fmtDate(r.fechaFactura),
+    fmtDate(r.vencimiento),
+    r.tipoDoc || "",
+    r.folio || "",
+    fmtRut(r.rut),
+    r.proveedor || "",
+    Math.round(Number(r.cargoTotal) || 0),
+    Math.round(Number(r.abonoTotal) || 0),
+    Math.round(Number(r.saldo) || 0),
+    r.nReferencia || "",
+    r.ocFormapago || "",
+    r.alerta || "",
+    r.nota || "",
+    r.estadoRev || "",
+  ]);
+
+  const totalSaldo = rows.reduce((s, r) => s + (Math.round(Number(r.saldo) || 0)), 0);
+  const filaTotal = ["", "", "", "", "", "", "TOTAL", "", "", totalSaldo, "", "", "", "", ""];
+
+  const aoa = [encabezados, ...filas, [], filaTotal];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [
+    { wch: 10 }, { wch: 13 }, { wch: 13 }, { wch: 22 }, { wch: 10 }, { wch: 14 },
+    { wch: 36 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 10 }, { wch: 16 },
+    { wch: 50 }, { wch: 30 }, { wch: 11 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Facturas");
+  XLSX.writeFile(wb, `${nombre}_${hoyParaArchivo()}.xlsx`);
+}
+
 // ─── PDF (vía impresión del navegador) ──────────────────────────────────
 function esc(s) {
   return String(s ?? "")

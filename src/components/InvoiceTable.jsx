@@ -1,8 +1,9 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS, normalizeSearch, parseDate } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
+import { exportFacturasExcel } from "../lib/export";
 
-export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showEstadoFilter = false, defaultShowPagadas = false }) {
+export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showEstadoFilter = false, defaultShowPagadas = false, exportName = "facturas" }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
@@ -19,12 +20,13 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
     return rows.filter(r => {
       // Las pagadas (saldo 0) se ocultan por defecto para enfocar lo pendiente,
       // PERO una factura sospechosa nunca se esconde por estar pagada: sigue
-      // siendo relevante para la auditoría aunque ya se haya cancelado. Así el
-      // contador del encabezado ("N sospechosas") siempre cuadra con lo visible.
-      if (showPagadas) {
-        if (!r.pagada) return false;                 // vista "solo pagadas"
-      } else if (r.pagada && !r.sospechosa) {
-        return false;                                // vista normal: oculta pagadas no sospechosas
+      // siendo relevante para la auditoría aunque ya se haya cancelado.
+      // Con el toggle activado se muestra TODO (pagadas + pendientes); antes
+      // mostraba "solo pagadas" y en Histórico escondía las facturas OK con
+      // saldo. En Problemas nunca se oculta nada: si la marcaste REVISAR,
+      // tiene que estar visible siempre.
+      if (!showProblems && !showPagadas && r.pagada && !r.sospechosa) {
+        return false;
       }
       if (qRaw) {
         // Match flexible: campos RUT/folio/OC se comparan también con la
@@ -47,7 +49,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
       if (showEstadoFilter && filterEstado !== "TODAS" && r.estadoRev !== filterEstado) return false;
       return true;
     });
-  }, [rows, searchText, filterCond, filterAlert, filterEstado, showEstadoFilter, showPagadas]);
+  }, [rows, searchText, filterCond, filterAlert, filterEstado, showEstadoFilter, showPagadas, showProblems]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -128,7 +130,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
         {[
           { label: "Facturas", value: rows.length.toLocaleString("es-CL"), color: "#6366f1" },
           { label: "Con OC", value: rows.filter(r => r.tieneRefOC).length.toLocaleString("es-CL"), color: "#22c55e" },
-          { label: "Contado c/ OC", value: sospechosasCount.toLocaleString("es-CL"), color: sospechosasCount > 0 ? "#ef4444" : "#64748b" },
+          { label: "Sospechosas", value: sospechosasCount.toLocaleString("es-CL"), color: sospechosasCount > 0 ? "#ef4444" : "#64748b" },
           { label: "Mostradas", value: filtered.length.toLocaleString("es-CL"), color: "#a5b4fc" },
         ].map((s, i) => (
           <div key={i} style={{
@@ -186,10 +188,10 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
             <option value="REVISADA">REVISADA</option>
           </select>
         )}
-        {pagadasCount > 0 && (
+        {!showProblems && pagadasCount > 0 && (
           <button
             onClick={() => setShowPagadas(v => !v)}
-            title={showPagadas ? "Volver a mostrar pendientes (saldo > 0)" : "Mostrar solo facturas pagadas (saldo 0)"}
+            title={showPagadas ? "Ocultar facturas pagadas (saldo 0) no sospechosas" : "Incluir también las facturas ya pagadas (saldo 0)"}
             style={{
               padding: "10px 14px",
               background: showPagadas ? "rgba(34,197,94,0.15)" : "rgba(30,41,59,0.6)",
@@ -220,6 +222,14 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
             </span>
           </button>
         )}
+        <button
+          onClick={() => exportFacturasExcel(sorted, exportName)}
+          disabled={sorted.length === 0}
+          title="Descargar las facturas mostradas (con filtros aplicados) como planilla Excel (.xlsx)"
+          style={exportBtnStyle("#16a34a", sorted.length === 0)}
+        >
+          ⬇ Excel
+        </button>
       </div>
 
       <div style={{
@@ -456,11 +466,15 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
 function NoteCell({ row, onNote }) {
   const [draft, setDraft] = useState(row.nota || "");
   const [saved, setSaved] = useState(false);
+  // Último valor enviado: evita el doble guardado cuando Enter dispara save()
+  // y el blur inmediato lo vuelve a disparar antes de que row.nota se actualice.
+  const lastSentRef = useRef(null);
 
   useEffect(() => { setDraft(row.nota || ""); }, [row.nota]);
 
   const save = async () => {
-    if (draft === (row.nota || "")) return;
+    if (draft === (row.nota || "") || draft === lastSentRef.current) return;
+    lastSentRef.current = draft;
     await onNote(row, draft);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
@@ -582,3 +596,17 @@ const selectStyle = {
   outline: "none",
   cursor: "pointer",
 };
+
+const exportBtnStyle = (color, disabled) => ({
+  padding: "10px 14px",
+  background: disabled ? "rgba(148,163,184,0.1)" : `${color}1f`,
+  border: `1px solid ${disabled ? "rgba(148,163,184,0.2)" : `${color}66`}`,
+  borderRadius: 10,
+  color: disabled ? "#64748b" : color,
+  fontSize: 13,
+  fontWeight: 600,
+  fontFamily: "inherit",
+  outline: "none",
+  cursor: disabled ? "not-allowed" : "pointer",
+  whiteSpace: "nowrap",
+});

@@ -202,8 +202,12 @@ export default function App() {
   // localStorage tenga keys sin sincronizar.
   useEffect(() => {
     const id = setInterval(() => {
-      const live = getPendingReviewsCount();
-      setPendingSyncCount(prev => (live > prev ? live : prev));
+      // localStorage (data_reviews_pending) es la fuente de verdad: reflejamos
+      // el conteo real en AMBOS sentidos. Antes sólo se permitía subir, así que
+      // cuando la sincronización en segundo plano vaciaba la cola el banner se
+      // quedaba "naranjo" anunciando pendientes que en realidad ya estaban
+      // arriba — justo la desconfianza que el banner busca evitar.
+      setPendingSyncCount(getPendingReviewsCount());
     }, 1500);
     const onStorage = (e) => {
       if (e.key === "data_reviews_pending" || e.key === "data_reviews") {
@@ -542,7 +546,7 @@ export default function App() {
             fontSize: 14,
           }}>⚙️</button>
 
-          <button onClick={refresh} title="Refrescar" style={{
+          <button onClick={() => refresh()} title="Refrescar" style={{
             background: "rgba(30,41,59,0.8)",
             border: "1px solid rgba(99,102,241,0.15)",
             borderRadius: 8,

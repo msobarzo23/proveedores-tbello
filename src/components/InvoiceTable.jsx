@@ -17,7 +17,15 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
     const qRaw = searchText.toLowerCase().trim();
     const qNorm = normalizeSearch(searchText);
     return rows.filter(r => {
-      if (showPagadas ? !r.pagada : r.pagada) return false;
+      // Las pagadas (saldo 0) se ocultan por defecto para enfocar lo pendiente,
+      // PERO una factura sospechosa nunca se esconde por estar pagada: sigue
+      // siendo relevante para la auditoría aunque ya se haya cancelado. Así el
+      // contador del encabezado ("N sospechosas") siempre cuadra con lo visible.
+      if (showPagadas) {
+        if (!r.pagada) return false;                 // vista "solo pagadas"
+      } else if (r.pagada && !r.sospechosa) {
+        return false;                                // vista normal: oculta pagadas no sospechosas
+      }
       if (qRaw) {
         // Match flexible: campos RUT/folio/OC se comparan también con la
         // versión normalizada (sin puntos/guiones) para que "76.123.456-7"

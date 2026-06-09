@@ -302,7 +302,12 @@ export function findFactCLSinDefontana(defontanaInvoices, compraRows = [], factc
   const fantasmas = [];
   for (const [k, row] of candidatos) {
     if (enDefontana.has(k)) continue;
-    const fantasmaKey = `FCL|${k}|${row.tipoDocCode || row.tipoDoc}`;
+    // Key estable por RUT+Folio. Antes incluía el código de tipo de documento
+    // al final, pero ese código varía según la fuente del fantasma (Informe de
+    // Compra trae "33"/"34"; Referencia trae el texto), así que si entre cargas
+    // cambiaba la fuente la key cambiaba y la review marcada quedaba huérfana.
+    // applyReviewState recupera reviews viejas con el 4º segmento por fallback.
+    const fantasmaKey = `FCL|${k}`;
     fantasmas.push({
       key: fantasmaKey,
       rut: row.rut,
@@ -364,9 +369,26 @@ export function applyReviewState(invoices, reviews) {
   // para reviews del flujo principal — los fantasma (prefijo "FCL|") se
   // excluyen porque su key tiene otra forma.
   const byRutFolio = {};
+  // Índice paralelo para las reviews fantasma (FCL|), agrupadas por
+  // FCL|rut|folio e ignorando un posible 4º segmento (tipoDocCode) que traían
+  // las keys viejas. Permite que una fila fantasma con key estable FCL|rut|folio
+  // recupere su estado aunque la review se guardara antes con el código de tipo
+  // de documento al final.
+  const fclByRutFolio = {};
   for (const [k, rev] of Object.entries(reviews || {})) {
-    if (!rev || !k || String(k).startsWith("FCL|")) continue;
-    const parts = String(k).split("|");
+    if (!rev || !k) continue;
+    const ks = String(k);
+    if (ks.startsWith("FCL|")) {
+      const parts = ks.split("|");          // ["FCL", rut, folio, tipoDocCode?]
+      if (parts.length < 3 || !parts[1] || !parts[2]) continue;
+      const idx = `FCL|${parts[1]}|${parts[2]}`;
+      const prev = fclByRutFolio[idx];
+      if (!prev || String(rev.updated_at || "") > String(prev.updated_at || "")) {
+        fclByRutFolio[idx] = rev;
+      }
+      continue;
+    }
+    const parts = ks.split("|");
     if (parts.length < 2 || !parts[0] || !parts[1]) continue;
     const idx = `${parts[0]}|${parts[1]}`;
     const prev = byRutFolio[idx];
@@ -377,8 +399,14 @@ export function applyReviewState(invoices, reviews) {
 
   return invoices.map(inv => {
     let rev = reviews?.[inv.key];
-    if (!rev && inv.rut && inv.folio && !String(inv.key || "").startsWith("FCL|")) {
-      rev = byRutFolio[`${inv.rut}|${inv.folio}`];
+    if (!rev) {
+      const key = String(inv.key || "");
+      if (key.startsWith("FCL|")) {
+        const parts = key.split("|");
+        if (parts.length >= 3) rev = fclByRutFolio[`FCL|${parts[1]}|${parts[2]}`];
+      } else if (inv.rut && inv.folio) {
+        rev = byRutFolio[`${inv.rut}|${inv.folio}`];
+      }
     }
     return {
       ...inv,

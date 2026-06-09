@@ -477,7 +477,7 @@ export async function loadAll() {
         defontana: pending.has("defontana") ? (lsGet(LS_KEYS.DEFONTANA, []) || []) : (json.defontana || []),
         oc:        pending.has("oc")        ? (lsGet(LS_KEYS.OC, []) || [])        : (json.oc || []),
         factcl:    pending.has("factcl")    ? (lsGet(LS_KEYS.FACTCL, []) || [])    : (json.factcl || []),
-        compra:    pending.has("compra")    ? (lsGet(LS_KEYS.COMPRA, []) || [])    : (json.compra || lsGet(LS_KEYS.COMPRA, []) || []),
+        compra:    pending.has("compra")    ? (lsGet(LS_KEYS.COMPRA, []) || [])    : (json.compra || []),
         reviews: mergedReviews,
         source: pending.size > 0 ? "gas+pending" : "gas",
         pendingSyncCount: pendingSyncKeys.length,

@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { IconFile, IconUpload, IconCheck, IconAlert } from "./Icons";
 
-export default function FileDrop({ label, description, accept = ".xlsx,.xls", onFileParsed, parser, accent = "#6366f1" }) {
+export default function FileDrop({ label, description, accept = ".xlsx,.xls", onFileParsed, parser, accent = "#3b82f6" }) {
   const inputRef = useRef(null);
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState(null); // { ok, msg, count }
@@ -47,7 +47,7 @@ export default function FileDrop({ label, description, accept = ".xlsx,.xls", on
           <div style={{ fontSize: 14, fontWeight: 700, color: accent }}>{label}</div>
           <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{description}</div>
           {file && (
-            <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6, fontFamily: "'JetBrains Mono', monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {file.name}
             </div>
           )}

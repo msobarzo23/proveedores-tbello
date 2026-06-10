@@ -139,7 +139,7 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
           { label: "Por revisar", value: pendientesCount.toLocaleString("es-CL"), color: pendientesCount > 0 ? "#ef4444" : "#64748b" },
           { label: "Total fantasmas", value: rows.length.toLocaleString("es-CL"), color: "#94a3b8" },
           { label: "Monto mostrado", value: fmtCLP(totalMonto), color: "#f59e0b" },
-          { label: "Mostradas", value: filtered.length.toLocaleString("es-CL"), color: "#a5b4fc" },
+          { label: "Mostradas", value: filtered.length.toLocaleString("es-CL"), color: "#93c5fd" },
         ].map((s, i) => (
           <div key={i} style={{
             background: "rgba(30,41,59,0.6)",
@@ -148,7 +148,7 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
             border: `1px solid ${s.color}33`,
           }}>
             <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>{s.label}</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: s.color, fontFamily: "monospace" }}>{s.value}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: s.color, fontFamily: "'JetBrains Mono', monospace" }}>{s.value}</div>
           </div>
         ))}
       </div>
@@ -168,7 +168,7 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
               width: "100%",
               padding: "10px 12px 10px 38px",
               background: "rgba(30,41,59,0.6)",
-              border: "1px solid rgba(99,102,241,0.2)",
+              border: "1px solid rgba(59,130,246,0.2)",
               borderRadius: 10,
               color: "#e2e8f0",
               fontSize: 13,
@@ -209,7 +209,7 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
       <div style={{
         background: "rgba(30,41,59,0.4)",
         borderRadius: 12,
-        border: "1px solid rgba(99,102,241,0.15)",
+        border: "1px solid rgba(59,130,246,0.15)",
         overflow: "hidden",
       }}>
         <div style={{ overflowX: "auto", maxHeight: "65vh" }}>
@@ -221,8 +221,8 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
                     padding: "10px 10px",
                     textAlign: "left",
                     fontWeight: 600,
-                    color: sortCol === k ? "#a5b4fc" : "#94a3b8",
-                    borderBottom: "1px solid rgba(99,102,241,0.15)",
+                    color: sortCol === k ? "#93c5fd" : "#94a3b8",
+                    borderBottom: "1px solid rgba(59,130,246,0.15)",
                     whiteSpace: "nowrap",
                     fontSize: 10,
                     textTransform: "uppercase",
@@ -257,7 +257,7 @@ export default function FantasmaTable({ rows, onMark, onNote }) {
           </table>
         </div>
         {sorted.length > 800 && (
-          <div style={{ padding: "10px 16px", textAlign: "center", fontSize: 12, color: "#64748b", borderTop: "1px solid rgba(99,102,241,0.1)" }}>
+          <div style={{ padding: "10px 16px", textAlign: "center", fontSize: 12, color: "#64748b", borderTop: "1px solid rgba(59,130,246,0.1)" }}>
             Mostrando 800 de {sorted.length.toLocaleString("es-CL")} · usa los filtros para acotar
           </div>
         )}
@@ -285,10 +285,10 @@ function FantasmaRow({ row, onMark, onNote }) {
       <td style={{ ...tdStyle, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" }}>
         {String(row.tipoDoc || "").replace("Electrónica", "Elec.").replace("Factura", "Fact.")}
       </td>
-      <td style={{ ...tdStyle, fontFamily: "monospace", fontWeight: 600, color: "#e2e8f0" }}>{row.folio}</td>
-      <td style={{ ...tdStyle, fontFamily: "monospace" }}>{fmtRut(row.rut)}</td>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, color: "#e2e8f0" }}>{row.folio}</td>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace" }}>{fmtRut(row.rut)}</td>
       <td style={{ ...tdStyle, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis" }}>{row.proveedor}</td>
-      <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right", color: "#f59e0b" }}>{fmtCLP(row.cargoTotal)}</td>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace", textAlign: "right", color: "#f59e0b" }}>{fmtCLP(row.cargoTotal)}</td>
       <td style={{ ...tdStyle, fontSize: 11, color: "#94a3b8" }}>{fuenteLabel}</td>
       <td style={{ ...tdStyle, minWidth: 200 }}>
         <NoteCell row={row} onNote={onNote} />
@@ -352,8 +352,8 @@ function NoteCell({ row, onNote }) {
         style={{
           flex: 1,
           padding: "4px 8px",
-          background: draft ? "rgba(99,102,241,0.08)" : "rgba(15,23,42,0.5)",
-          border: `1px solid ${draft ? "rgba(99,102,241,0.35)" : "rgba(99,102,241,0.12)"}`,
+          background: draft ? "rgba(59,130,246,0.08)" : "rgba(15,23,42,0.5)",
+          border: `1px solid ${draft ? "rgba(59,130,246,0.35)" : "rgba(59,130,246,0.12)"}`,
           borderRadius: 6,
           color: "#e2e8f0",
           fontSize: 11,
@@ -396,7 +396,7 @@ function ActionBtn({ color, title, onClick, children }) {
 
 const tdStyle = {
   padding: "8px 10px",
-  borderBottom: "1px solid rgba(99,102,241,0.05)",
+  borderBottom: "1px solid rgba(59,130,246,0.05)",
   whiteSpace: "nowrap",
   color: "#cbd5e1",
 };
@@ -404,7 +404,7 @@ const tdStyle = {
 const selectStyle = {
   padding: "10px 12px",
   background: "rgba(30,41,59,0.6)",
-  border: "1px solid rgba(99,102,241,0.2)",
+  border: "1px solid rgba(59,130,246,0.2)",
   borderRadius: 10,
   color: "#e2e8f0",
   fontSize: 13,

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
 import FantasmaTable from "./components/FantasmaTable";
-import { IconTruck, IconUpload, IconSearch, IconAlert, IconRefresh } from "./components/Icons";
+import { IconUpload, IconSearch, IconAlert, IconRefresh, IconGear } from "./components/Icons";
 import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews, getPendingReviewsCount } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState, findFactCLSinDefontana } from "./lib/crossref";
@@ -436,46 +436,46 @@ export default function App() {
   return (
     <div style={{
       minHeight: "100vh",
-      fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif",
+      fontFamily: "'Plus Jakarta Sans', 'Segoe UI', system-ui, sans-serif",
       background: "linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)",
       color: "#e2e8f0",
+      display: "flex",
+      flexDirection: "column",
     }}>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-
       {/* Header */}
       <div style={{
         background: "rgba(15,23,42,0.8)",
-        borderBottom: "1px solid rgba(99,102,241,0.2)",
+        borderBottom: "1px solid rgba(59,130,246,0.2)",
         backdropFilter: "blur(20px)",
-        padding: "14px 24px",
+        padding: "10px 24px",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        gap: 16,
         flexWrap: "wrap",
-        gap: 10,
         position: "sticky",
         top: 0,
         zIndex: 100,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <img
+            src="/logo-bello-white.png"
+            alt="Transportes Bello — Operador Logístico"
+            style={{ height: 52, width: "auto", display: "block" }}
+          />
           <div style={{
-            background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
-            borderRadius: 10,
-            padding: 8,
-            display: "flex",
-          }}>
-            <IconTruck />
-          </div>
+            width: 1,
+            height: 38,
+            background: "rgba(148,163,184,0.25)",
+          }} />
           <div>
             <div style={{
               fontSize: 17,
-              fontWeight: 700,
+              fontWeight: 800,
               letterSpacing: "-0.02em",
-              background: "linear-gradient(135deg, #e2e8f0, #94a3b8)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
+              color: "#f1f5f9",
             }}>
-              PROVEEDORES TBELLO
+              Control de Proveedores
             </div>
             <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.05em", textTransform: "uppercase" }}>
               Auditoría de facturas · Defontana × OC × Fact.cl
@@ -490,10 +490,10 @@ export default function App() {
             background: "rgba(30,41,59,0.8)",
             borderRadius: 10,
             padding: 3,
-            border: "1px solid rgba(99,102,241,0.15)",
+            border: "1px solid rgba(59,130,246,0.15)",
           }}>
             {tabs.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} style={{
+              <button key={t.id} onClick={() => setTab(t.id)} className={tab === t.id ? "tab-btn tab-btn-active" : "tab-btn"} style={{
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
@@ -505,9 +505,7 @@ export default function App() {
                 fontWeight: 600,
                 fontFamily: "inherit",
                 transition: "all 0.2s",
-                background: tab === t.id
-                  ? "linear-gradient(135deg, #6366f1, #7c3aed)"
-                  : "transparent",
+                ...(tab === t.id ? { background: "linear-gradient(135deg, #2563eb, #1d4ed8)" } : {}),
                 color: tab === t.id ? "#fff" : "#94a3b8",
               }}>
                 {t.icon}
@@ -539,23 +537,25 @@ export default function App() {
             ))}
           </div>
 
-          <button onClick={() => setShowConfig(!showConfig)} style={{
+          <button onClick={() => setShowConfig(!showConfig)} title="Configuración" className="icon-btn" style={{
             background: "rgba(30,41,59,0.8)",
-            border: "1px solid rgba(99,102,241,0.15)",
+            border: "1px solid rgba(59,130,246,0.15)",
             borderRadius: 8,
             padding: 8,
             cursor: "pointer",
             color: "#94a3b8",
-            fontSize: 14,
-          }}>⚙️</button>
+            display: "flex",
+          }}>
+            <IconGear />
+          </button>
 
-          <button onClick={() => refresh()} disabled={loading} title={loading ? "Cargando..." : "Refrescar"} style={{
+          <button onClick={() => refresh()} disabled={loading} title={loading ? "Cargando..." : "Refrescar"} className="icon-btn" style={{
             background: "rgba(30,41,59,0.8)",
-            border: "1px solid rgba(99,102,241,0.15)",
+            border: "1px solid rgba(59,130,246,0.15)",
             borderRadius: 8,
             padding: 8,
             cursor: loading ? "wait" : "pointer",
-            color: loading ? "#6366f1" : "#94a3b8",
+            color: loading ? "#60a5fa" : "#94a3b8",
             display: "flex",
           }}>
             <span style={{ display: "flex", animation: loading ? "spin 0.9s linear infinite" : "none" }}>
@@ -729,7 +729,7 @@ export default function App() {
           padding: "14px 18px",
           background: "rgba(30,41,59,0.6)",
           borderRadius: 12,
-          border: "1px solid rgba(99,102,241,0.2)",
+          border: "1px solid rgba(59,130,246,0.2)",
         }}>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "#94a3b8" }}>
             URL Google Apps Script (Web App) — opcional
@@ -744,7 +744,7 @@ export default function App() {
                 flex: 1,
                 padding: "10px 12px",
                 background: "rgba(15,23,42,0.8)",
-                border: "1px solid rgba(99,102,241,0.2)",
+                border: "1px solid rgba(59,130,246,0.2)",
                 borderRadius: 8,
                 color: "#e2e8f0",
                 fontSize: 12,
@@ -754,7 +754,7 @@ export default function App() {
             />
             <button onClick={saveGas} style={{
               padding: "10px 16px",
-              background: "linear-gradient(135deg, #6366f1, #7c3aed)",
+              background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
               border: "none",
               borderRadius: 8,
               color: "#fff",
@@ -799,7 +799,7 @@ export default function App() {
       )}
 
       {/* Contenido */}
-      <div style={{ padding: 24, maxWidth: 1600, margin: "0 auto" }}>
+      <div key={tab} style={{ padding: 24, maxWidth: 1600, margin: "0 auto", width: "100%", flex: 1, animation: "fadeInUp 0.4s cubic-bezier(0.4, 0, 0.2, 1) both" }}>
         {tab === "carga" && <CargaTab onDataChanged={refresh} />}
         {tab === "principal" && (
           <InvoiceTable rows={principalRows} onMark={handleMark} onNote={handleNote} exportName="principal" />
@@ -815,7 +815,7 @@ export default function App() {
                 textAlign: "center",
                 background: "rgba(30,41,59,0.4)",
                 borderRadius: 12,
-                border: "1px solid rgba(99,102,241,0.15)",
+                border: "1px solid rgba(59,130,246,0.15)",
                 color: "#64748b",
               }}>
                 Sin facturas marcadas para revisar.
@@ -836,14 +836,44 @@ export default function App() {
         )}
       </div>
 
+      {/* Footer institucional */}
+      <div style={{
+        marginTop: "auto",
+        padding: "14px 24px",
+        borderTop: "1px solid rgba(59,130,246,0.12)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+        fontSize: 11,
+        color: "#475569",
+        letterSpacing: "0.03em",
+      }}>
+        <img src="/logo-bello-white.png" alt="" style={{ height: 22, width: "auto", opacity: 0.45 }} />
+        <span>Transportes Bello e Hijos Ltda. · Gerencia de Administración y Finanzas · Uso interno</span>
+      </div>
+
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeInUp {
+          from { opacity: 0; transform: translateY(12px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: rgba(15,23,42,0.5); }
-        ::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.3); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(99,102,241,0.5); }
+        ::-webkit-scrollbar-thumb { background: rgba(59,130,246,0.3); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(59,130,246,0.5); }
         select option { background: #1e293b; color: #e2e8f0; }
+        .tab-btn { background: transparent; }
+        .tab-btn:not(.tab-btn-active):hover { background: rgba(59,130,246,0.15); color: #dbeafe; }
+        .icon-btn { transition: all 0.2s; }
+        .icon-btn:hover { border-color: rgba(59,130,246,0.45) !important; color: #dbeafe !important; }
+        tbody tr { transition: background 0.15s; }
+        tbody tr:hover { background: rgba(59,130,246,0.07); }
+        button { transition: filter 0.2s, transform 0.1s; }
+        button:active { transform: scale(0.98); }
+        button:hover { filter: brightness(1.08); }
       `}</style>
     </div>
   );

@@ -131,14 +131,14 @@ export default function CargaTab({ onDataChanged }) {
       <div style={{
         marginBottom: 20,
         padding: "14px 18px",
-        background: "rgba(99,102,241,0.08)",
-        border: "1px solid rgba(99,102,241,0.2)",
+        background: "rgba(59,130,246,0.08)",
+        border: "1px solid rgba(59,130,246,0.2)",
         borderRadius: 12,
         fontSize: 13,
         color: "#cbd5e1",
         lineHeight: 1.6,
       }}>
-        <strong style={{ color: "#a5b4fc" }}>Flujo:</strong> carga los 4 archivos y pulsa <em>Guardar todo</em>.
+        <strong style={{ color: "#93c5fd" }}>Flujo:</strong> carga los 4 archivos y pulsa <em>Guardar todo</em>.
         El sistema cruza Defontana (facturas) con <em>Referencia Fact.cl</em> (link a OC),
         <em> Informe de Compra</em> (fecha real de emisión SII) y Reporte OC (TMS). Detecta
         facturas <strong style={{ color: "#f87171" }}>CONTADO con OC asociada</strong>,
@@ -195,7 +195,7 @@ export default function CargaTab({ onDataChanged }) {
           label="1. DEFONTANA"
           description="Informe por Análisis · fuente principal"
           parser={parseDefontana}
-          accent="#6366f1"
+          accent="#3b82f6"
           onFileParsed={handleParsed("defontana")}
         />
         <FileDrop
@@ -273,13 +273,13 @@ export default function CargaTab({ onDataChanged }) {
           padding: 14,
           border: "none",
           borderRadius: 12,
-          background: (busy || !anyPending) ? "rgba(99,102,241,0.3)" : "linear-gradient(135deg, #6366f1, #7c3aed)",
+          background: (busy || !anyPending) ? "rgba(59,130,246,0.3)" : "linear-gradient(135deg, #2563eb, #1d4ed8)",
           color: "#fff",
           fontSize: 15,
           fontWeight: 700,
           fontFamily: "inherit",
           cursor: (busy || !anyPending) ? "not-allowed" : "pointer",
-          boxShadow: (busy || !anyPending) ? "none" : "0 4px 15px rgba(99,102,241,0.3)",
+          boxShadow: (busy || !anyPending) ? "none" : "0 4px 15px rgba(59,130,246,0.3)",
         }}
       >
         {uploading
@@ -300,12 +300,12 @@ export default function CargaTab({ onDataChanged }) {
           marginTop: 12,
           padding: "10px 14px",
           background: "rgba(15,23,42,0.6)",
-          border: "1px solid rgba(99,102,241,0.25)",
+          border: "1px solid rgba(59,130,246,0.25)",
           borderRadius: 10,
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#cbd5e1", marginBottom: 6 }}>
             <span>
-              <strong style={{ color: "#a5b4fc" }}>{DATASET_LABELS[progress.dataset]}</strong>
+              <strong style={{ color: "#93c5fd" }}>{DATASET_LABELS[progress.dataset]}</strong>
               {progress.batches > 0 && (
                 <span style={{ color: "#64748b" }}>
                   {" "}· batch {progress.batch} / {progress.batches}
@@ -318,14 +318,14 @@ export default function CargaTab({ onDataChanged }) {
           </div>
           <div style={{
             height: 6,
-            background: "rgba(99,102,241,0.15)",
+            background: "rgba(59,130,246,0.15)",
             borderRadius: 3,
             overflow: "hidden",
           }}>
             <div style={{
               height: "100%",
               width: progress.total > 0 ? `${Math.min(100, (progress.rows / progress.total) * 100)}%` : "0%",
-              background: "linear-gradient(90deg, #6366f1, #8b5cf6)",
+              background: "linear-gradient(90deg, #3b82f6, #60a5fa)",
               transition: "width 0.3s",
             }} />
           </div>

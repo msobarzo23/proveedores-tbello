@@ -128,10 +128,10 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
         marginBottom: 14,
       }}>
         {[
-          { label: "Facturas", value: rows.length.toLocaleString("es-CL"), color: "#6366f1" },
+          { label: "Facturas", value: rows.length.toLocaleString("es-CL"), color: "#3b82f6" },
           { label: "Con OC", value: rows.filter(r => r.tieneRefOC).length.toLocaleString("es-CL"), color: "#22c55e" },
           { label: "Sospechosas", value: sospechosasCount.toLocaleString("es-CL"), color: sospechosasCount > 0 ? "#ef4444" : "#64748b" },
-          { label: "Mostradas", value: filtered.length.toLocaleString("es-CL"), color: "#a5b4fc" },
+          { label: "Mostradas", value: filtered.length.toLocaleString("es-CL"), color: "#93c5fd" },
         ].map((s, i) => (
           <div key={i} style={{
             background: "rgba(30,41,59,0.6)",
@@ -140,7 +140,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
             border: `1px solid ${s.color}33`,
           }}>
             <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>{s.label}</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: s.color, fontFamily: "monospace" }}>{s.value}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: s.color, fontFamily: "'JetBrains Mono', monospace" }}>{s.value}</div>
           </div>
         ))}
       </div>
@@ -160,7 +160,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
               width: "100%",
               padding: "10px 12px 10px 38px",
               background: "rgba(30,41,59,0.6)",
-              border: "1px solid rgba(99,102,241,0.2)",
+              border: "1px solid rgba(59,130,246,0.2)",
               borderRadius: 10,
               color: "#e2e8f0",
               fontSize: 13,
@@ -195,7 +195,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
             style={{
               padding: "10px 14px",
               background: showPagadas ? "rgba(34,197,94,0.15)" : "rgba(30,41,59,0.6)",
-              border: `1px solid ${showPagadas ? "rgba(34,197,94,0.35)" : "rgba(99,102,241,0.2)"}`,
+              border: `1px solid ${showPagadas ? "rgba(34,197,94,0.35)" : "rgba(59,130,246,0.2)"}`,
               borderRadius: 10,
               color: showPagadas ? "#86efac" : "#cbd5e1",
               fontSize: 12,
@@ -216,7 +216,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
               padding: "1px 6px",
               fontSize: 10,
               fontWeight: 700,
-              fontFamily: "monospace",
+              fontFamily: "'JetBrains Mono', monospace",
             }}>
               {pagadasCount.toLocaleString("es-CL")}
             </span>
@@ -235,7 +235,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
       <div style={{
         background: "rgba(30,41,59,0.4)",
         borderRadius: 12,
-        border: "1px solid rgba(99,102,241,0.15)",
+        border: "1px solid rgba(59,130,246,0.15)",
         overflow: "hidden",
       }}>
         <div style={{ overflowX: "auto", maxHeight: "65vh" }}>
@@ -247,8 +247,8 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
                     padding: "10px 10px",
                     textAlign: "left",
                     fontWeight: 600,
-                    color: sortCol === k ? "#a5b4fc" : "#94a3b8",
-                    borderBottom: "1px solid rgba(99,102,241,0.15)",
+                    color: sortCol === k ? "#93c5fd" : "#94a3b8",
+                    borderBottom: "1px solid rgba(59,130,246,0.15)",
                     whiteSpace: "nowrap",
                     fontSize: 10,
                     textTransform: "uppercase",
@@ -281,7 +281,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
           </table>
         </div>
         {sorted.length > 800 && (
-          <div style={{ padding: "10px 16px", textAlign: "center", fontSize: 12, color: "#64748b", borderTop: "1px solid rgba(99,102,241,0.1)" }}>
+          <div style={{ padding: "10px 16px", textAlign: "center", fontSize: 12, color: "#64748b", borderTop: "1px solid rgba(59,130,246,0.1)" }}>
             Mostrando 800 de {sorted.length.toLocaleString("es-CL")} · usa los filtros para acotar
           </div>
         )}
@@ -340,7 +340,7 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
               background: "rgba(239,68,68,0.15)",
               color: "#f87171",
               border: "1px solid rgba(239,68,68,0.35)",
-              fontFamily: "monospace",
+              fontFamily: "'JetBrains Mono', monospace",
             }}
           >
             +{row.diasIngreso}d
@@ -353,7 +353,7 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
             {row.vencimientos.map((v, i) => (
               <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", whiteSpace: "nowrap" }}>
                 <span>{fmtDate(v.fecha)}</span>
-                <span style={{ fontFamily: "monospace", fontSize: 10, color: "#94a3b8" }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#94a3b8" }}>
                   {fmtCLP(v.monto)}
                 </span>
               </div>
@@ -366,7 +366,7 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
       <td style={{ ...tdStyle, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>
         {row.tipoDoc.replace("Electrónica", "Elec.").replace("Factura", "Fact.")}
       </td>
-      <td style={{ ...tdStyle, fontFamily: "monospace", fontWeight: 600, color: "#e2e8f0" }}>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, color: "#e2e8f0" }}>
         {row.folio}
         {row.soloEnReviews && (
           <span
@@ -380,7 +380,7 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
               background: "rgba(148,163,184,0.15)",
               color: "#94a3b8",
               border: "1px solid rgba(148,163,184,0.35)",
-              fontFamily: "monospace",
+              fontFamily: "'JetBrains Mono', monospace",
             }}
           >
             solo reviews
@@ -406,7 +406,7 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
           </span>
         )}
       </td>
-      <td style={{ ...tdStyle, fontFamily: "monospace" }}>{fmtRut(row.rut)}</td>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace" }}>{fmtRut(row.rut)}</td>
       <td
         title={row.esFactoring && row.cedidaDe?.proveedor ? `${row.proveedor} ← cedida de ${row.cedidaDe.proveedor}` : row.proveedor}
         style={{ ...tdStyle, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}
@@ -418,12 +418,12 @@ function InvoiceRow({ row, onMark, onNote, showProblems }) {
           </span>
         )}
       </td>
-      <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right" }}>{fmtCLP(row.cargoTotal)}</td>
-      <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right", color: "#22c55e" }}>{fmtCLP(row.abonoTotal)}</td>
-      <td style={{ ...tdStyle, fontFamily: "monospace", textAlign: "right", color: row.saldo < 0 ? "#f87171" : "#e2e8f0" }}>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace", textAlign: "right" }}>{fmtCLP(row.cargoTotal)}</td>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace", textAlign: "right", color: "#22c55e" }}>{fmtCLP(row.abonoTotal)}</td>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace", textAlign: "right", color: row.saldo < 0 ? "#f87171" : "#e2e8f0" }}>
         {fmtCLP(row.saldo)}
       </td>
-      <td style={{ ...tdStyle, fontFamily: "monospace" }}>
+      <td style={{ ...tdStyle, fontFamily: "'JetBrains Mono', monospace" }}>
         {row.tieneRefOC ? (
           <span style={{ color: "#22c55e", fontWeight: 600 }}>{row.nReferencia}</span>
         ) : (
@@ -508,8 +508,8 @@ function NoteCell({ row, onNote }) {
         style={{
           flex: 1,
           padding: "4px 8px",
-          background: draft ? "rgba(99,102,241,0.08)" : "rgba(15,23,42,0.5)",
-          border: `1px solid ${draft ? "rgba(99,102,241,0.35)" : "rgba(99,102,241,0.12)"}`,
+          background: draft ? "rgba(59,130,246,0.08)" : "rgba(15,23,42,0.5)",
+          border: `1px solid ${draft ? "rgba(59,130,246,0.35)" : "rgba(59,130,246,0.12)"}`,
           borderRadius: 6,
           color: "#e2e8f0",
           fontSize: 11,
@@ -518,7 +518,7 @@ function NoteCell({ row, onNote }) {
           minWidth: 0,
           transition: "border-color 0.15s, background 0.15s",
         }}
-        onFocus={e => { e.currentTarget.style.borderColor = "rgba(99,102,241,0.6)"; }}
+        onFocus={e => { e.currentTarget.style.borderColor = "rgba(59,130,246,0.6)"; }}
       />
       {saved && (
         <span style={{ fontSize: 10, color: "#22c55e", whiteSpace: "nowrap" }}>✓ guardado</span>
@@ -580,7 +580,7 @@ function ActionBtn({ color, title, onClick, children }) {
 
 const tdStyle = {
   padding: "8px 10px",
-  borderBottom: "1px solid rgba(99,102,241,0.05)",
+  borderBottom: "1px solid rgba(59,130,246,0.05)",
   whiteSpace: "nowrap",
   color: "#cbd5e1",
 };
@@ -588,7 +588,7 @@ const tdStyle = {
 const selectStyle = {
   padding: "10px 12px",
   background: "rgba(30,41,59,0.6)",
-  border: "1px solid rgba(99,102,241,0.2)",
+  border: "1px solid rgba(59,130,246,0.2)",
   borderRadius: 10,
   color: "#e2e8f0",
   fontSize: 13,

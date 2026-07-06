@@ -20,13 +20,20 @@ const LS_KEYS = {
 // Bump cuando la URL por defecto cambie o haya que forzar limpieza de URLs viejas.
 const URL_VERSION = "2";
 
-// Tamaño de batch para POSTs a GAS. 250 da buen balance entre velocidad y
-// confiabilidad: payloads chicos llegan completos aun en redes inestables.
-const BATCH_SIZE = 250;
+// Tamaño de batch para POSTs a GAS. 500 mantiene el payload chico (~300KB)
+// y reduce a la mitad la cantidad de requests: una carga completa de los 4
+// archivos (~33k filas) pasó de ~130 POSTs a ~66, lo que evita el rate-limit
+// de Google que devolvía páginas HTML de error a mitad de la carga.
+const BATCH_SIZE = 500;
 
-// Reintentos por batch ante errores transitorios de red ("Failed to fetch",
-// timeouts). Backoff exponencial con jitter.
-const MAX_RETRIES = 3;
+// Pausa entre batches consecutivos. Le da respiro al Web App para no gatillar
+// el throttling de Google en cargas grandes.
+const BATCH_PAUSE_MS = 250;
+
+// Reintentos por batch ante errores transitorios: fallos de red ("Failed to
+// fetch", timeouts) y también respuestas HTML de error de Google (rate-limit),
+// que se resuelven solas esperando. Backoff exponencial con jitter.
+const MAX_RETRIES = 4;
 
 export const getGasUrl = () => {
   try {
@@ -308,13 +315,16 @@ export async function forceSyncPendingReviews(onProgress) {
 }
 
 // ─── FETCH HELPERS ───────────────────────────────────────────────
-// Post JSON al GAS con reintentos. "Failed to fetch" suele ser transitorio
-// (redirect intermedio que falla, conexión interrumpida) y se resuelve al
-// reintentar. Si el error es de GAS (ok:false) NO reintentamos: el problema
-// no se va a arreglar solo.
+// Post JSON al GAS con reintentos. Son transitorios (y se reintentan con
+// backoff): los fallos de red ("Failed to fetch", timeouts), las respuestas
+// que no son JSON (Google devuelve una página HTML de error cuando ratea las
+// requests en cargas grandes) y los "Lock timeout" de GAS. Solo los errores
+// de negocio reportados por GAS (ok:false) se devuelven de inmediato: esos
+// no se arreglan reintentando.
 async function postJSON(url, body, { maxRetries = MAX_RETRIES } = {}) {
   let lastErr = null;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    let transient = true;
     try {
       const res = await fetch(url, {
         method: "POST",
@@ -323,32 +333,30 @@ async function postJSON(url, body, { maxRetries = MAX_RETRIES } = {}) {
         redirect: "follow",
       });
       const text = await res.text();
-      let json;
+      let json = null;
       try { json = JSON.parse(text); }
       catch {
         const m = text.match(/\{[\s\S]*\}/);
         if (m) {
-          try { json = JSON.parse(m[0]); }
-          catch { throw new Error("Respuesta inválida del servidor"); }
-        } else {
-          throw new Error("Respuesta inválida: " + text.slice(0, 200));
+          try { json = JSON.parse(m[0]); } catch { /* sigue null */ }
         }
       }
+      if (!json) {
+        throw new Error("Respuesta inválida del servidor (posible límite temporal de Google — reintentando)");
+      }
       if (!json.ok) {
-        // Error reportado por GAS: no reintentar, devolvemos el error.
-        throw new Error(json.error || "Error del servidor");
+        const errMsg = json.error || "Error del servidor";
+        transient = /lock timeout/i.test(errMsg);
+        throw new Error(errMsg);
       }
       return json;
     } catch (e) {
       lastErr = e;
-      const msg = e.message || String(e);
-      // Errores de GAS (devolvió ok:false) no se reintentan
-      if (msg.startsWith("Error del servidor") || msg.startsWith("Respuesta inválida")) {
-        throw e;
-      }
-      // Errores de red: backoff y reintentar
+      if (!transient) throw e;
       if (attempt < maxRetries - 1) {
-        const delay = 800 * Math.pow(2, attempt) + Math.random() * 400;
+        // Backoff largo (1.5s, 3s, 6s + jitter): el rate-limit de Google
+        // necesita más espera que un fallo de red puntual.
+        const delay = 1500 * Math.pow(2, attempt) + Math.random() * 500;
         await new Promise(r => setTimeout(r, delay));
       }
     }
@@ -421,6 +429,7 @@ async function postDataset(url, dataset, rows, onProgress) {
       isLast,
     });
     if (onProgress) onProgress({ dataset, batch: b + 1, batches, rows: Math.min(i + BATCH_SIZE, total), total });
+    if (!isLast) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
   }
   return { ok: true, source: "gas", count: total };
 }

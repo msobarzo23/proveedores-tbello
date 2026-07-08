@@ -119,7 +119,7 @@ function loadAll_() {
   return { ok: true, defontana, oc, factcl, compra, reviews };
 }
 
-function saveDataset_({ dataset, rows, clear, isLast }) {
+function saveDataset_({ dataset, rows, clear, isLast, batchStart }) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const name = {
     defontana: SHEETS.DEFONTANA,
@@ -142,9 +142,18 @@ function saveDataset_({ dataset, rows, clear, isLast }) {
     sh.getRange(1, 1, 1, headers.length).setValues([headers]);
   }
 
-  const lastRow = sh.getLastRow();
+  // Escritura idempotente: si el cliente envía batchStart (índice de la
+  // primera fila del lote dentro del dataset), la fila destino es
+  // determinista (headers en fila 1 → datos desde fila 2). Un lote repetido
+  // —porque Google aplicó el POST pero respondió con HTML de rate-limit y el
+  // cliente reintentó— sobreescribe su propio rango en vez de appendearse al
+  // final (eso triplicó facturas en jul-2026). Clientes antiguos no envían
+  // batchStart y conservan el append.
+  const startRow = (typeof batchStart === "number" && batchStart >= 0)
+    ? batchStart + 2
+    : sh.getLastRow() + 1;
   const values = rows.map(o => headers.map(h => o[h] ?? ""));
-  sh.getRange(lastRow + 1, 1, values.length, headers.length).setValues(values);
+  sh.getRange(startRow, 1, values.length, headers.length).setValues(values);
 
   return { ok: true, count: rows.length, isLast: !!isLast };
 }

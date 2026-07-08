@@ -321,7 +321,12 @@ export async function forceSyncPendingReviews(onProgress) {
 // requests en cargas grandes) y los "Lock timeout" de GAS. Solo los errores
 // de negocio reportados por GAS (ok:false) se devuelven de inmediato: esos
 // no se arreglan reintentando.
-async function postJSON(url, body, { maxRetries = MAX_RETRIES } = {}) {
+// retryTransient=false: lanza de inmediato ante un error transitorio en vez
+// de reintentar el mismo body. Necesario para save_dataset, donde el POST no
+// es idempotente: si Google aplicó la escritura pero respondió con HTML de
+// rate-limit, reintentar el mismo lote lo duplica en el Sheet. El error
+// lanzado lleva `e.transient` para que el caller decida cómo recuperarse.
+async function postJSON(url, body, { maxRetries = MAX_RETRIES, retryTransient = true } = {}) {
   let lastErr = null;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let transient = true;
@@ -352,7 +357,8 @@ async function postJSON(url, body, { maxRetries = MAX_RETRIES } = {}) {
       return json;
     } catch (e) {
       lastErr = e;
-      if (!transient) throw e;
+      e.transient = transient;
+      if (!transient || !retryTransient) throw e;
       if (attempt < maxRetries - 1) {
         // Backoff largo (1.5s, 3s, 6s + jitter): el rate-limit de Google
         // necesita más espera que un fallo de red puntual.
@@ -361,7 +367,9 @@ async function postJSON(url, body, { maxRetries = MAX_RETRIES } = {}) {
       }
     }
   }
-  throw lastErr || new Error("Falló después de reintentos");
+  const err = lastErr || new Error("Falló después de reintentos");
+  err.transient = true;
+  throw err;
 }
 
 // ─── SAVE DATASETS ───────────────────────────────────────────────
@@ -414,24 +422,93 @@ export async function retryPendingDatasets(onProgress) {
   return results;
 }
 
+// Sube el dataset en lotes. Un POST cuya respuesta no se pudo leer (HTML de
+// rate-limit de Google, corte de red) es AMBIGUO: el Sheet pudo haberlo
+// escrito igual. Reintentar solo ese lote duplicaba filas — así se
+// triplicaron facturas en jul-2026 (montos ×3 en la app). Ante ambigüedad se
+// reinicia la subida completa desde el lote 0 con clear=true, lo que deja la
+// hoja consistente sin importar qué alcanzó a escribirse.
 async function postDataset(url, dataset, rows, onProgress) {
   const total = rows.length;
   const batches = Math.max(1, Math.ceil(total / BATCH_SIZE));
-  for (let i = 0, b = 0; i < total; i += BATCH_SIZE, b++) {
-    const batch = rows.slice(i, i + BATCH_SIZE);
-    const isFirst = i === 0;
-    const isLast = i + BATCH_SIZE >= total;
-    await postJSON(url, {
-      action: "save_dataset",
-      dataset,
-      rows: batch,
-      clear: isFirst,
-      isLast,
-    });
-    if (onProgress) onProgress({ dataset, batch: b + 1, batches, rows: Math.min(i + BATCH_SIZE, total), total });
-    if (!isLast) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
+  const MAX_UPLOAD_ATTEMPTS = 3;
+  let lastErr = null;
+  for (let attempt = 0; attempt < MAX_UPLOAD_ATTEMPTS; attempt++) {
+    // Espera larga antes de reintentar la subida completa: si Google está
+    // rate-limiteando, insistir de inmediato solo alarga el problema.
+    if (attempt > 0) await new Promise(r => setTimeout(r, 5000 * attempt + Math.random() * 1000));
+    try {
+      for (let i = 0, b = 0; i < total; i += BATCH_SIZE, b++) {
+        const batch = rows.slice(i, i + BATCH_SIZE);
+        const isFirst = i === 0;
+        const isLast = i + BATCH_SIZE >= total;
+        await postJSON(url, {
+          action: "save_dataset",
+          dataset,
+          rows: batch,
+          clear: isFirst,
+          isLast,
+          // Un GAS actualizado escribe cada lote en su fila determinista
+          // (batchStart + 2): un lote repetido sobreescribe su propio rango
+          // en vez de appendearse. GAS antiguos ignoran el campo.
+          batchStart: i,
+        }, { retryTransient: false });
+        if (onProgress) onProgress({ dataset, batch: b + 1, batches, rows: Math.min(i + BATCH_SIZE, total), total });
+        if (!isLast) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
+      }
+      return { ok: true, source: "gas", count: total };
+    } catch (e) {
+      lastErr = e;
+      // Errores de negocio de GAS (ok:false no transitorio) no se arreglan
+      // reintentando la subida.
+      if (e.transient === false) throw e;
+    }
   }
-  return { ok: true, source: "gas", count: total };
+  throw lastErr;
+}
+
+// ─── DEDUPE DE ECOS DE LOTE ──────────────────────────────────────
+// Repara datasets que quedaron con lotes duplicados en el Sheet: versiones
+// anteriores del uploader reintentaban un lote cuya respuesta se perdió por
+// rate-limit, pero el Sheet SÍ lo había escrito → el mismo bloque de filas
+// quedaba appendeado 2 o 3 veces seguidas (jul-2026: facturas con montos ×3).
+// Un "eco" es un bloque de ≥MIN_ECHO filas consecutivas idéntico al bloque
+// inmediatamente anterior; ningún export contable real repite tantas filas
+// iguales seguidas, así que eliminarlo es seguro. Duplicados legítimos
+// aislados (p.ej. dos cuotas iguales) quedan intactos.
+const MIN_ECHO = 50;
+export function dedupeBatchEchoes(rows) {
+  if (!Array.isArray(rows) || rows.length < MIN_ECHO * 2) return rows;
+  const sig = rows.map(r => JSON.stringify(r));
+  const maxBlock = Math.max(BATCH_SIZE, 500);
+  const outSig = [];
+  const out = [];
+  let i = 0;
+  while (i < rows.length) {
+    let echo = 0;
+    const maxL = Math.min(maxBlock, outSig.length, rows.length - i);
+    for (let L = maxL; L >= MIN_ECHO; L--) {
+      // Chequeo barato primero: la fila actual debe calzar con el inicio
+      // del posible bloque repetido.
+      if (outSig[outSig.length - L] !== sig[i]) continue;
+      let match = true;
+      let variado = false; // el bloque debe tener ≥2 filas distintas para ser
+                           // un eco real; un tramo homogéneo no se toca
+      for (let k = 1; k < L; k++) {
+        if (outSig[outSig.length - L + k] !== sig[i + k]) { match = false; break; }
+        if (!variado && sig[i + k] !== sig[i]) variado = true;
+      }
+      if (match && variado) { echo = L; break; }
+    }
+    if (echo) { i += echo; continue; }
+    out.push(rows[i]);
+    outSig.push(sig[i]);
+    i++;
+  }
+  if (out.length !== rows.length) {
+    console.warn(`dedupeBatchEchoes: eliminadas ${rows.length - out.length} filas duplicadas por eco de lote`);
+  }
+  return out;
 }
 
 // ─── LOAD DATASETS ───────────────────────────────────────────────
@@ -447,6 +524,13 @@ export async function loadAll() {
         if (m) json = JSON.parse(m[0]); else throw new Error("GAS respuesta no JSON");
       }
       if (!json.ok) throw new Error(json.error || "Error al cargar");
+
+      // Reparar posibles ecos de lote guardados en el Sheet por versiones
+      // anteriores del uploader (ver dedupeBatchEchoes).
+      if (json.defontana) json.defontana = dedupeBatchEchoes(json.defontana);
+      if (json.oc) json.oc = dedupeBatchEchoes(json.oc);
+      if (json.factcl) json.factcl = dedupeBatchEchoes(json.factcl);
+      if (json.compra) json.compra = dedupeBatchEchoes(json.compra);
 
       // Combinar reviews de GAS con las locales para no perder cambios que
       // nunca llegaron a sincronizar (e.g. POST falló en silencio). Sin esta
@@ -483,10 +567,10 @@ export async function loadAll() {
         .catch(e => console.warn("Error sincronizando reviews pendientes:", e));
 
       return {
-        defontana: pending.has("defontana") ? (lsGet(LS_KEYS.DEFONTANA, []) || []) : (json.defontana || []),
-        oc:        pending.has("oc")        ? (lsGet(LS_KEYS.OC, []) || [])        : (json.oc || []),
-        factcl:    pending.has("factcl")    ? (lsGet(LS_KEYS.FACTCL, []) || [])    : (json.factcl || []),
-        compra:    pending.has("compra")    ? (lsGet(LS_KEYS.COMPRA, []) || [])    : (json.compra || []),
+        defontana: pending.has("defontana") ? dedupeBatchEchoes(lsGet(LS_KEYS.DEFONTANA, []) || []) : (json.defontana || []),
+        oc:        pending.has("oc")        ? dedupeBatchEchoes(lsGet(LS_KEYS.OC, []) || [])        : (json.oc || []),
+        factcl:    pending.has("factcl")    ? dedupeBatchEchoes(lsGet(LS_KEYS.FACTCL, []) || [])    : (json.factcl || []),
+        compra:    pending.has("compra")    ? dedupeBatchEchoes(lsGet(LS_KEYS.COMPRA, []) || [])    : (json.compra || []),
         reviews: mergedReviews,
         source: pending.size > 0 ? "gas+pending" : "gas",
         pendingSyncCount: pendingSyncKeys.length,
@@ -498,10 +582,10 @@ export async function loadAll() {
   // Fallback puro local: el conteo de pendientes equivale al de fallos
   // explícitos, porque no podemos comparar contra GAS sin conexión.
   return {
-    defontana: lsGet(LS_KEYS.DEFONTANA, []) || [],
-    oc: lsGet(LS_KEYS.OC, []) || [],
-    factcl: lsGet(LS_KEYS.FACTCL, []) || [],
-    compra: lsGet(LS_KEYS.COMPRA, []) || [],
+    defontana: dedupeBatchEchoes(lsGet(LS_KEYS.DEFONTANA, []) || []),
+    oc: dedupeBatchEchoes(lsGet(LS_KEYS.OC, []) || []),
+    factcl: dedupeBatchEchoes(lsGet(LS_KEYS.FACTCL, []) || []),
+    compra: dedupeBatchEchoes(lsGet(LS_KEYS.COMPRA, []) || []),
     reviews: lsGet(LS_KEYS.REVIEWS, {}) || {},
     source: "local",
     pendingSyncCount: getPendingReviewKeys().length,

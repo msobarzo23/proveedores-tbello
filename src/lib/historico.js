@@ -5,10 +5,11 @@
 const HISTORICO_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vT1ILHR8Hehw4FiGRKgTm__paCyusHvn5LcHlOeFtZAxENpO8GKr2MzV6s1iX7R8e1KbTJqYOCWIMTU/pub?gid=1453444709&single=true&output=csv";
 
-// Normaliza RUT: quita puntos, guiones, espacios y pasa a mayúsculas.
-// "99.520.000-7" → "995200007"
+// Normaliza RUT: quita puntos, guiones, espacios, ceros a la izquierda y
+// pasa a mayúsculas. "99.520.000-7" → "995200007". Debe producir lo mismo
+// que normRut de parsers.js para que los cruces por RUT calcen.
 export const normalizeRut = (r) =>
-  String(r || "").replace(/[.\-\s]/g, "").toUpperCase();
+  String(r || "").replace(/[.\-\s]/g, "").toUpperCase().replace(/^0+(?=\w)/, "");
 
 // Parseo CSV simple (el sheet publicado no tiene comas dentro de campos).
 function parseCsv(text) {

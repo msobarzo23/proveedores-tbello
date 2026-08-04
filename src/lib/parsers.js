@@ -3,7 +3,17 @@ import * as XLSX from "xlsx";
 // ─── Helpers ───────────────────────────────────────────────────────
 export const normRut = (r) => {
   if (!r) return "";
-  return String(r).replace(/[.\s]/g, "").replace(/-/g, "").toUpperCase().trim();
+  // Sin puntos/guiones/espacios, mayúsculas y SIN ceros a la izquierda:
+  // el Sheet convierte "033769261" a número 33769261, así que si no
+  // quitamos el cero acá, la misma factura tiene un rut distinto según
+  // venga del archivo recién parseado o del round-trip por Google Sheet
+  // (y la review guardada con una forma no matchea con la otra).
+  return String(r)
+    .replace(/[.\s]/g, "")
+    .replace(/-/g, "")
+    .toUpperCase()
+    .trim()
+    .replace(/^0+(?=\w)/, "");
 };
 
 export const normFolio = (f) => {

@@ -1,5 +1,12 @@
 // Cliente del Google Apps Script. Si no hay URL configurada, persiste en localStorage.
 
+import { normRut, normFolio, normOC } from "./parsers";
+
+// Versión de gas/Code.gs que este cliente espera. loadAll_ la devuelve como
+// gasVersion; si el Web App desplegado es más viejo (o no la reporta), la UI
+// muestra un aviso para redeployar (paso manual en Apps Script).
+export const EXPECTED_GAS_VERSION = 3;
+
 // URL por defecto del Web App. Si el usuario guarda otra en ⚙️ en su
 // navegador, esa toma precedencia (permite cambiar de hoja sin redeployar).
 export const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbyAe6b-Flbg5vpHoM27696ZPCqRJpB-DGHrJWPzurEQD2NZalWCN7hC_rGOmry7k32Y/exec";
@@ -65,8 +72,16 @@ const lsGet = (k, dflt = null) => {
     return s ? JSON.parse(s) : dflt;
   } catch { return dflt; }
 };
+// Devuelve false si no se pudo guardar (localStorage lleno o bloqueado).
+// Los 4 datasets juntos pueden superar la cuota (~5-10MB según navegador);
+// tragarse ese error en silencio dejaba copias locales viejas/incompletas
+// que después se mostraban como si fueran datos vigentes.
 const lsSet = (k, v) => {
-  try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
+  try { localStorage.setItem(k, JSON.stringify(v)); return true; }
+  catch (e) {
+    console.warn(`localStorage no pudo guardar ${k} (¿cuota llena?):`, e?.message);
+    return false;
+  }
 };
 
 // Mutex en cadena de promesas. Cuando varios saveReview corren en paralelo
@@ -132,6 +147,67 @@ const removePendingReviewKey = (key) => {
   setPendingReviewKeys(getPendingReviewKeys().filter(k => k !== key));
 };
 export const getPendingReviewsCount = () => getPendingReviewKeys().length;
+
+// ─── NORMALIZACIÓN POST-SHEET ────────────────────────────────────
+// Google Sheet convierte tipos al guardar: RUT/folio/OC que eran strings
+// vuelven como números, y los RUT con cero a la izquierda lo pierden
+// ("033769261" → 33769261). Sin re-normalizar al cargar, las keys y los
+// cruces calzan o no según si los datos vienen del archivo recién parseado
+// o del round-trip por el Sheet — y los conteos cambian entre navegadores.
+function normalizeDatasets(r) {
+  const S = (v) => (v == null ? "" : String(v).trim());
+  for (const row of r.defontana || []) {
+    row.rutRaw = S(row.rutRaw || row.rut);
+    row.rut = normRut(row.rutRaw);
+    row.folio = normFolio(row.folio);
+    row.folioRaw = S(row.folioRaw);
+    row.tipoDoc = S(row.tipoDoc);
+    row.condicion = S(row.condicion);
+    row.tipoMov = S(row.tipoMov);
+  }
+  for (const row of r.oc || []) {
+    row.oc = normOC(row.oc);
+  }
+  for (const row of r.factcl || []) {
+    row.rut = normRut(row.rut);
+    row.folio = normFolio(row.folio);
+    row.nReferencia = normOC(row.nReferencia);
+    row.tipoDoc = S(row.tipoDoc);
+  }
+  for (const row of r.compra || []) {
+    row.rut = normRut(row.rut);
+    row.folio = normFolio(row.folio);
+    row.tipoDoc = S(row.tipoDoc);
+  }
+  return r;
+}
+
+// Canonicaliza la key de una review con la misma normalización de RUT/folio
+// que usan las filas. Reviews guardadas antes del fix de ceros a la izquierda
+// (key "033769261|123|...") se funden con su forma canónica ("33769261|...").
+function canonReviewKey(key) {
+  const ks = String(key);
+  if (ks.startsWith("FCL|")) {
+    const p = ks.split("|"); // ["FCL", rut, folio, tipoDocCode?]
+    if (p.length < 3 || !p[1] || !p[2]) return ks;
+    const rest = p.slice(3).join("|");
+    return `FCL|${normRut(p[1])}|${normFolio(p[2])}${rest ? "|" + rest : ""}`;
+  }
+  const p = ks.split("|");
+  if (p.length < 2 || !p[0] || !p[1]) return ks;
+  return `${normRut(p[0])}|${normFolio(p[1])}${p.length > 2 ? "|" + p.slice(2).join("|") : ""}`;
+}
+
+function canonicalizeReviews(reviews) {
+  const out = {};
+  for (const [k, rev] of Object.entries(reviews || {})) {
+    if (!rev) continue;
+    const ck = canonReviewKey(k);
+    const prev = out[ck];
+    if (!prev || String(rev.updated_at || "") > String(prev.updated_at || "")) out[ck] = rev;
+  }
+  return out;
+}
 
 // Combina reviews de GAS con las locales preservando las locales que GAS no
 // tiene (probablemente saves que nunca llegaron a sincronizar) y las locales
@@ -293,14 +369,8 @@ export async function forceSyncPendingReviews(onProgress) {
 
   let gasReviews = {};
   try {
-    const res = await fetch(`${url}?action=load_all`, { redirect: "follow" });
-    const text = await res.text();
-    let json;
-    try { json = JSON.parse(text); } catch {
-      const m = text.match(/\{[\s\S]*\}/);
-      if (m) json = JSON.parse(m[0]);
-    }
-    if (json && json.ok) gasReviews = json.reviews || {};
+    const json = await getJSON(`${url}?action=load_all`);
+    if (json && json.ok) gasReviews = canonicalizeReviews(json.reviews || {});
     else if (json && json.error) {
       return { ok: false, error: "GAS respondió error: " + json.error };
     }
@@ -315,6 +385,34 @@ export async function forceSyncPendingReviews(onProgress) {
 }
 
 // ─── FETCH HELPERS ───────────────────────────────────────────────
+// GET JSON con reintentos y backoff. Antes, un solo fallo de red o una
+// página HTML de rate-limit de Google hacía que loadAll cayera en silencio
+// al localStorage del navegador — y los conteos "saltaban" entre un refresh
+// y otro según si el fetch tuvo suerte o no.
+async function getJSON(url, { maxRetries = 3 } = {}) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, { redirect: "follow" });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch {
+        const m = text.match(/\{[\s\S]*\}/);
+        if (m) { try { json = JSON.parse(m[0]); } catch { /* sigue null */ } }
+      }
+      if (!json) throw new Error("Respuesta no JSON del servidor (posible límite temporal de Google)");
+      return json;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < maxRetries - 1) {
+        const delay = 1200 * Math.pow(2, attempt) + Math.random() * 400;
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 // Post JSON al GAS con reintentos. Son transitorios (y se reintentan con
 // backoff): los fallos de red ("Failed to fetch", timeouts), las respuestas
 // que no son JSON (Google devuelve una página HTML de error cuando ratea las
@@ -376,12 +474,14 @@ async function postJSON(url, body, { maxRetries = MAX_RETRIES, retryTransient = 
 // Guarda en local SIEMPRE, intenta GAS después. Si GAS falla, deja el dataset
 // en cola de pendientes para que se pueda reintentar.
 async function saveWithFallback(key, dataset, rows, onProgress) {
-  lsSet(key, rows);
+  const localOk = lsSet(key, rows);
   stampSave(dataset);
   const url = getGasUrl();
   if (!url) {
     removePendingDataset(dataset);
-    return { ok: true, source: "local", count: rows.length };
+    return localOk
+      ? { ok: true, source: "local", count: rows.length }
+      : { ok: true, source: "local", count: rows.length, warning: "el navegador no tiene espacio para guardar la copia local" };
   }
   try {
     const r = await postDataset(url, dataset, rows, onProgress);
@@ -389,6 +489,16 @@ async function saveWithFallback(key, dataset, rows, onProgress) {
     return r;
   } catch (e) {
     console.warn(`[${dataset}] GAS falló, guardado solo en local:`, e.message);
+    if (!localOk) {
+      // Ni el Sheet ni el navegador tienen el archivo: decirlo sin adornos.
+      // Dejar la marca "pendiente" apuntando a una copia local que no existe
+      // haría que Reintentar borrara la marca creyendo que no hay nada.
+      removePendingDataset(dataset);
+      throw new Error(
+        `No se pudo subir a Google Sheet (${e.message}) y el navegador no tiene espacio ` +
+        `para la copia local. Hay que volver a cargar el archivo.`
+      );
+    }
     addPendingDataset(dataset);
     return { ok: true, source: "local", count: rows.length, warning: e.message };
   }
@@ -452,6 +562,11 @@ async function postDataset(url, dataset, rows, onProgress) {
           // (batchStart + 2): un lote repetido sobreescribe su propio rango
           // en vez de appendearse. GAS antiguos ignoran el campo.
           batchStart: i,
+          // Total esperado del dataset: un GAS v3 lo anota en la hoja Meta al
+          // primer lote, así OTROS navegadores pueden detectar que una carga
+          // quedó a medias (filas en el Sheet < total esperado) y avisarlo en
+          // vez de mostrar datos truncados como si estuvieran completos.
+          totalRows: total,
         }, { retryTransient: false });
         if (onProgress) onProgress({ dataset, batch: b + 1, batches, rows: Math.min(i + BATCH_SIZE, total), total });
         if (!isLast) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
@@ -516,13 +631,7 @@ export async function loadAll() {
   const url = getGasUrl();
   if (url) {
     try {
-      const res = await fetch(`${url}?action=load_all`, { redirect: "follow" });
-      const text = await res.text();
-      let json;
-      try { json = JSON.parse(text); } catch {
-        const m = text.match(/\{[\s\S]*\}/);
-        if (m) json = JSON.parse(m[0]); else throw new Error("GAS respuesta no JSON");
-      }
+      const json = await getJSON(`${url}?action=load_all`);
       if (!json.ok) throw new Error(json.error || "Error al cargar");
 
       // Reparar posibles ecos de lote guardados en el Sheet por versiones
@@ -532,19 +641,38 @@ export async function loadAll() {
       if (json.factcl) json.factcl = dedupeBatchEchoes(json.factcl);
       if (json.compra) json.compra = dedupeBatchEchoes(json.compra);
 
+      // Re-normalizar tipos tras el round-trip por el Sheet (ruts/folios
+      // vuelven como números y pierden ceros a la izquierda).
+      normalizeDatasets(json);
+
+      // Datasets incompletos: un GAS v3 devuelve en meta el total esperado
+      // por dataset (anotado al iniciar cada carga). Si el Sheet tiene menos
+      // filas, la carga de alguien quedó a medias y hay que avisarlo.
+      const gasVersion = Number(json.gasVersion) || 0;
+      const incompleteDatasets = [];
+      if (json.meta) {
+        for (const ds of ["defontana", "oc", "factcl", "compra"]) {
+          const expected = Number(json.meta[ds]?.count) || 0;
+          const actual = (json[ds] || []).length;
+          if (expected > 0 && actual < expected) {
+            incompleteDatasets.push({ dataset: ds, actual, expected });
+          }
+        }
+      }
+
       // Combinar reviews de GAS con las locales para no perder cambios que
       // nunca llegaron a sincronizar (e.g. POST falló en silencio). Sin esta
       // mezcla, lsSet(REVIEWS, json.reviews) sobrescribía estados REVISADA/OK
       // que el usuario marcó pero que nunca alcanzaron a guardarse en GAS,
       // haciendo que las facturas reaparecieran como PENDIENTE.
-      const gasReviews = json.reviews || {};
+      const gasReviews = canonicalizeReviews(json.reviews || {});
 
       // Lock para evitar carrera con saveReview corriendo en paralelo: si
       // entremedio del merge alguien marca una review, la escritura podría
       // pisarla. Re-leemos localReviews adentro del lock para no usar una
       // versión obsoleta.
       const { mergedReviews, pendingSyncKeys } = await withLsLock(() => {
-        const localReviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
+        const localReviews = canonicalizeReviews(lsGet(LS_KEYS.REVIEWS, {}) || {});
         const merged = mergeReviews(gasReviews, localReviews);
 
         const pending = new Set(getPendingDatasets());
@@ -566,30 +694,47 @@ export async function loadAll() {
       syncPendingReviewsToGAS(url, mergedReviews, gasReviews)
         .catch(e => console.warn("Error sincronizando reviews pendientes:", e));
 
+      const local = normalizeDatasets({
+        defontana: pending.has("defontana") ? dedupeBatchEchoes(lsGet(LS_KEYS.DEFONTANA, []) || []) : null,
+        oc:        pending.has("oc")        ? dedupeBatchEchoes(lsGet(LS_KEYS.OC, []) || [])        : null,
+        factcl:    pending.has("factcl")    ? dedupeBatchEchoes(lsGet(LS_KEYS.FACTCL, []) || [])    : null,
+        compra:    pending.has("compra")    ? dedupeBatchEchoes(lsGet(LS_KEYS.COMPRA, []) || [])    : null,
+      });
       return {
-        defontana: pending.has("defontana") ? dedupeBatchEchoes(lsGet(LS_KEYS.DEFONTANA, []) || []) : (json.defontana || []),
-        oc:        pending.has("oc")        ? dedupeBatchEchoes(lsGet(LS_KEYS.OC, []) || [])        : (json.oc || []),
-        factcl:    pending.has("factcl")    ? dedupeBatchEchoes(lsGet(LS_KEYS.FACTCL, []) || [])    : (json.factcl || []),
-        compra:    pending.has("compra")    ? dedupeBatchEchoes(lsGet(LS_KEYS.COMPRA, []) || [])    : (json.compra || []),
+        defontana: local.defontana || json.defontana || [],
+        oc:        local.oc        || json.oc        || [],
+        factcl:    local.factcl   || json.factcl    || [],
+        compra:    local.compra   || json.compra    || [],
         reviews: mergedReviews,
         source: pending.size > 0 ? "gas+pending" : "gas",
         pendingSyncCount: pendingSyncKeys.length,
+        gasVersion,
+        incompleteDatasets,
       };
     } catch (e) {
       console.warn("Fallback a localStorage:", e.message);
+      // Con URL configurada pero sin conexión al Sheet, el fallback local es
+      // una COPIA de este navegador — la UI debe decirlo (source distinta).
+      return { ...loadLocalOnly_(), source: "local-error", loadError: e.message };
     }
   }
-  // Fallback puro local: el conteo de pendientes equivale al de fallos
-  // explícitos, porque no podemos comparar contra GAS sin conexión.
-  return {
+  return loadLocalOnly_();
+}
+
+// Fallback puro local: el conteo de pendientes equivale al de fallos
+// explícitos, porque no podemos comparar contra GAS sin conexión.
+function loadLocalOnly_() {
+  return normalizeDatasets({
     defontana: dedupeBatchEchoes(lsGet(LS_KEYS.DEFONTANA, []) || []),
     oc: dedupeBatchEchoes(lsGet(LS_KEYS.OC, []) || []),
     factcl: dedupeBatchEchoes(lsGet(LS_KEYS.FACTCL, []) || []),
     compra: dedupeBatchEchoes(lsGet(LS_KEYS.COMPRA, []) || []),
-    reviews: lsGet(LS_KEYS.REVIEWS, {}) || {},
+    reviews: canonicalizeReviews(lsGet(LS_KEYS.REVIEWS, {}) || {}),
     source: "local",
     pendingSyncCount: getPendingReviewKeys().length,
-  };
+    gasVersion: 0,
+    incompleteDatasets: [],
+  });
 }
 
 // ─── REVIEWS ────────────────────────────────────────────────────

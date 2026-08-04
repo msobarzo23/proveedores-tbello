@@ -3,11 +3,18 @@ import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
 import FantasmaTable from "./components/FantasmaTable";
 import { IconUpload, IconSearch, IconAlert, IconRefresh, IconGear } from "./components/Icons";
-import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews, getPendingReviewsCount } from "./lib/gas";
+import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews, getPendingReviewsCount, getPendingDatasets, retryPendingDatasets, EXPECTED_GAS_VERSION } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState, findFactCLSinDefontana } from "./lib/crossref";
 import { loadHistoricoCredito } from "./lib/historico";
 import { loadFactoring } from "./lib/factoring";
+
+const DATASET_LABELS = {
+  defontana: "Defontana",
+  oc: "Reporte OC",
+  factcl: "Referencia Fact.cl",
+  compra: "Informe de Compra",
+};
 
 export default function App() {
   const [tab, setTab] = useState("carga");
@@ -32,6 +39,16 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState(null); // { done, total, failed } | null
   const [syncResult, setSyncResult] = useState(null); // { done, total, failed } | null
+
+  // Archivos (datasets) que quedaron solo en este navegador porque la subida
+  // al Sheet falló, y estado del reintento directo desde el banner superior.
+  const [pendingDs, setPendingDs] = useState(() => getPendingDatasets());
+  const [dsRetrying, setDsRetrying] = useState(false);
+  // Integridad reportada por el backend: versión del Code.gs desplegado y
+  // datasets cuya última carga quedó a medias en el Sheet.
+  const [gasVersion, setGasVersion] = useState(null);
+  const [incompleteDatasets, setIncompleteDatasets] = useState([]);
+  const [loadError, setLoadError] = useState(null);
 
   // Ref con el último enrichedAll, para poder snapshotear datos de filas que
   // están a punto de desaparecer del nuevo Defontana al auto-conciliar.
@@ -165,6 +182,10 @@ export default function App() {
       setHistoricoCount(h.count);
       setFactoringByRut(fct.byRut);
       setPendingSyncCount(r.pendingSyncCount || 0);
+      setPendingDs(getPendingDatasets());
+      setGasVersion(r.gasVersion ?? null);
+      setIncompleteDatasets(r.incompleteDatasets || []);
+      setLoadError(r.source === "local-error" ? (r.loadError || "sin conexión") : null);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -195,6 +216,34 @@ export default function App() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Reintenta subir al Sheet los archivos que quedaron solo en este navegador.
+  // Disponible desde el banner superior (antes había que ir a Carga) y se
+  // dispara solo una vez al abrir la app: la mayoría de los fallos de subida
+  // son transitorios (rate-limit de Google) y se resuelven con reintentar,
+  // pero nadie volvía a la pestaña Carga a apretar el botón — el dataset
+  // quedaba truncado en el Sheet y cada navegador veía números distintos.
+  const handleRetryDatasets = useCallback(async () => {
+    if (dsRetrying) return;
+    setDsRetrying(true);
+    try {
+      await retryPendingDatasets();
+    } catch (e) {
+      console.warn("Reintento de archivos pendientes falló:", e.message);
+    } finally {
+      setDsRetrying(false);
+      setPendingDs(getPendingDatasets());
+      refresh();
+    }
+  }, [dsRetrying, refresh]);
+
+  const autoRetryRef = useRef(false);
+  useEffect(() => {
+    if (autoRetryRef.current) return;
+    autoRetryRef.current = true;
+    if (getPendingDatasets().length > 0) handleRetryDatasets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Refresca el contador de pendientes en vivo. El conteo viene de loadAll
   // (que compara local vs GAS), pero entremedio pueden aparecer pendientes
   // nuevos por saves en curso (auto-conciliación, marcado rápido, fallos
@@ -208,11 +257,13 @@ export default function App() {
       // quedaba "naranjo" anunciando pendientes que en realidad ya estaban
       // arriba — justo la desconfianza que el banner busca evitar.
       setPendingSyncCount(getPendingReviewsCount());
+      setPendingDs(getPendingDatasets());
     }, 1500);
     const onStorage = (e) => {
       if (e.key === "data_reviews_pending" || e.key === "data_reviews") {
         setPendingSyncCount(getPendingReviewsCount());
       }
+      if (e.key === "data_pending_datasets") setPendingDs(getPendingDatasets());
     };
     window.addEventListener("storage", onStorage);
     return () => { clearInterval(id); window.removeEventListener("storage", onStorage); };
@@ -345,10 +396,14 @@ export default function App() {
     // Si la fila no es fantasma, capturamos snapshot fresco para preservar
     // proveedor/vencimiento/montos cuando la factura desaparezca de Defontana.
     const snapshot = row.soloEnReviews ? null : snapshotFromRow(row);
-    setReviews(prev => ({
-      ...prev,
-      [row.key]: { estado, nota, updated_at: new Date().toISOString(), snapshot: snapshot || prev[row.key]?.snapshot || null },
-    }));
+    let prevRev;
+    setReviews(prev => {
+      prevRev = prev[row.key];
+      return {
+        ...prev,
+        [row.key]: { estado, nota, updated_at: new Date().toISOString(), snapshot: snapshot || prev[row.key]?.snapshot || null },
+      };
+    });
     // Pre-marcar pendiente en la UI antes incluso de iniciar el POST: saveReview
     // ya escribió la marca en localStorage, queremos que el banner lo refleje
     // de inmediato.
@@ -357,9 +412,12 @@ export default function App() {
       await saveReview(row.key, estado, nota, snapshot);
     } catch (e) {
       console.error(e);
+      // Restaurar el estado anterior (si lo había): borrar a secas convertía
+      // una factura ya REVISADA/OK de vuelta en PENDIENTE ante un error.
       setReviews(prev => {
         const next = { ...prev };
-        delete next[row.key];
+        if (prevRev) next[row.key] = prevRev;
+        else delete next[row.key];
         return next;
       });
       alert("Error guardando: " + e.message);
@@ -568,22 +626,46 @@ export default function App() {
       {/* Banner de fuente + advertencia */}
       <div style={{
         padding: "8px 24px",
-        background: source === "gas" ? "rgba(34,197,94,0.06)" : "rgba(245,158,11,0.06)",
-        borderBottom: `1px solid ${source === "gas" ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.15)"}`,
+        background: source === "gas" ? "rgba(34,197,94,0.06)" : source === "local-error" ? "rgba(239,68,68,0.08)" : "rgba(245,158,11,0.06)",
+        borderBottom: `1px solid ${source === "gas" ? "rgba(34,197,94,0.15)" : source === "local-error" ? "rgba(239,68,68,0.25)" : "rgba(245,158,11,0.15)"}`,
         fontSize: 11,
-        color: source === "gas" ? "#86efac" : "#fbbf24",
+        color: source === "gas" ? "#86efac" : source === "local-error" ? "#f87171" : "#fbbf24",
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
+        gap: 12,
+        flexWrap: "wrap",
       }}>
-        <span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {source === "gas"
             ? "🟢 Sincronizado con Google Sheet"
             : source === "gas+pending"
-              ? "🟡 Conectado a Google Sheet · hay archivos pendientes de sincronizar (ve a Carga → Reintentar)"
-              : "🟡 Modo local (navegador) · configura Google Sheet en ⚙️ para sincronizar"}
+              ? `🟡 Conectado a Google Sheet · ${pendingDs.length} archivo${pendingDs.length === 1 ? "" : "s"} de datos sin subir al Sheet (${pendingDs.map(d => DATASET_LABELS[d] || d).join(", ")})`
+              : source === "local-error"
+                ? `🔴 Sin conexión con Google Sheet — mostrando la copia guardada en ESTE navegador (los números pueden diferir de lo que ven otros). Reintenta con ⟳.`
+                : "🟡 Modo local (navegador) · configura Google Sheet en ⚙️ para sincronizar"}
+          {source === "gas+pending" && (
+            <button
+              onClick={handleRetryDatasets}
+              disabled={dsRetrying}
+              style={{
+                padding: "4px 10px",
+                background: dsRetrying ? "rgba(245,158,11,0.35)" : "linear-gradient(135deg, #f59e0b, #d97706)",
+                border: "none",
+                borderRadius: 6,
+                color: "#fff",
+                cursor: dsRetrying ? "wait" : "pointer",
+                fontWeight: 700,
+                fontSize: 11,
+                fontFamily: "inherit",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {dsRetrying ? "Reintentando…" : "Reintentar ahora"}
+            </button>
+          )}
           {historicoCount > 0 && (
-            <span style={{ marginLeft: 12, color: "#94a3b8" }}>
+            <span style={{ color: "#94a3b8" }}>
               · Histórico crédito: {historicoCount.toLocaleString("es-CL")} proveedores
             </span>
           )}
@@ -690,6 +772,17 @@ export default function App() {
                   · viven sólo en este navegador hasta que se suban
                 </span>
               </span>
+            ) : source === "gas+pending" ? (
+              // No decir "todo sincronizado" mientras el banner de arriba
+              // avisa de archivos pendientes: los dos mensajes hablan de
+              // cosas distintas (revisiones vs archivos de datos) y juntos
+              // parecían contradecirse.
+              <span style={{ color: "#fcd34d", fontWeight: 600 }}>
+                ✓ Revisiones sincronizadas
+                <span style={{ color: "#fde68a", fontWeight: 400, marginLeft: 6 }}>
+                  · pero quedan archivos de datos por subir (botón arriba)
+                </span>
+              </span>
             ) : (
               <span style={{ color: "#86efac", fontWeight: 600 }}>
                 ✓ Todo sincronizado con Google Sheet
@@ -719,6 +812,44 @@ export default function App() {
               Forzar sincronización ahora
             </button>
           )}
+        </div>
+      )}
+
+      {/* Datasets cuya última carga quedó a medias en el Sheet compartido:
+          todos los usuarios ven datos truncados (menos facturas, cruces con
+          OC/fechas que fallan) sin saberlo. Detectado vía hoja Meta (GAS v3). */}
+      {incompleteDatasets.length > 0 && (
+        <div style={{
+          padding: "8px 24px",
+          background: "rgba(239,68,68,0.08)",
+          borderBottom: "1px solid rgba(239,68,68,0.25)",
+          fontSize: 12,
+          color: "#f87171",
+          fontWeight: 600,
+        }}>
+          ⚠️ Carga incompleta en el Google Sheet:{" "}
+          {incompleteDatasets.map(d =>
+            `${DATASET_LABELS[d.dataset] || d.dataset} (${d.actual.toLocaleString("es-CL")} de ${d.expected.toLocaleString("es-CL")} filas)`
+          ).join(", ")}.
+          <span style={{ fontWeight: 400, marginLeft: 6, color: "#fca5a5" }}>
+            La persona que subió el archivo debe volver a cargarlo en la pestaña Carga (o usar Reintentar si le aparece el aviso naranjo).
+          </span>
+        </div>
+      )}
+
+      {/* Backend Apps Script desplegado más antiguo que el que espera esta
+          versión de la app: funciona, pero sin las protecciones nuevas
+          (bloqueo de cargas simultáneas, detección de cargas incompletas). */}
+      {(source === "gas" || source === "gas+pending") && gasVersion != null && gasVersion < EXPECTED_GAS_VERSION && (
+        <div style={{
+          padding: "6px 24px",
+          background: "rgba(245,158,11,0.05)",
+          borderBottom: "1px solid rgba(245,158,11,0.12)",
+          fontSize: 11,
+          color: "#d97706",
+        }}>
+          ⚙️ El backend de Google Apps Script está desactualizado (v{gasVersion || "antigua"} — esta app espera v{EXPECTED_GAS_VERSION}).
+          Hay que pegar el gas/Code.gs nuevo en Apps Script y crear una versión nueva de la implementación (paso manual de Miguel).
         </div>
       )}
 

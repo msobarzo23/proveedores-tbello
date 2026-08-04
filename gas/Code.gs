@@ -11,12 +11,17 @@
  *   5. Copiar la URL /exec y pegarla en el panel ⚙️ de la app.
  */
 
+// Versión del backend. El cliente la compara con la que espera y muestra un
+// aviso si el Web App desplegado está desactualizado. Subirla en cada cambio.
+const GAS_VERSION = 3;
+
 const SHEETS = {
   DEFONTANA: "Defontana",
   OC: "OC",
   FACTCL: "FactCL",
   COMPRA: "Compra",
   REVIEWS: "Reviews",
+  META: "Meta",
 };
 
 function setup() {
@@ -116,11 +121,47 @@ function loadAll_() {
     });
   }
 
-  return { ok: true, defontana, oc, factcl, compra, reviews };
+  return { ok: true, gasVersion: GAS_VERSION, defontana, oc, factcl, compra, reviews, meta: readMeta_(ss) };
 }
 
-function saveDataset_({ dataset, rows, clear, isLast, batchStart }) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+// ─── Meta: total esperado por dataset ─────────────────────────────
+// Se anota al PRIMER lote de cada carga (el cliente manda totalRows). Si la
+// carga muere a medias, el Sheet queda con menos filas que el total esperado
+// y cualquier cliente puede detectarlo y avisar, en vez de mostrar datos
+// truncados como si estuvieran completos.
+function writeMeta_(ss, dataset, count) {
+  let sh = ss.getSheetByName(SHEETS.META);
+  if (!sh) {
+    sh = ss.insertSheet(SHEETS.META);
+    sh.getRange(1, 1, 1, 3).setValues([["dataset", "count", "updated_at"]]);
+  }
+  const now = new Date().toISOString();
+  const lastRow = sh.getLastRow();
+  if (lastRow > 1) {
+    const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i][0] === dataset) {
+        sh.getRange(i + 2, 1, 1, 3).setValues([[dataset, count, now]]);
+        return;
+      }
+    }
+  }
+  sh.getRange(lastRow + 1, 1, 1, 3).setValues([[dataset, count, now]]);
+}
+
+function readMeta_(ss) {
+  const sh = ss.getSheetByName(SHEETS.META);
+  if (!sh || sh.getLastRow() < 2) return {};
+  const vals = sh.getRange(2, 1, sh.getLastRow() - 1, 3).getValues();
+  const out = {};
+  for (let i = 0; i < vals.length; i++) {
+    const d = vals[i][0];
+    if (d) out[d] = { count: Number(vals[i][1]) || 0, updated_at: String(vals[i][2] || "") };
+  }
+  return out;
+}
+
+function saveDataset_({ dataset, rows, clear, isLast, batchStart, totalRows }) {
   const name = {
     defontana: SHEETS.DEFONTANA,
     oc:        SHEETS.OC,
@@ -129,33 +170,52 @@ function saveDataset_({ dataset, rows, clear, isLast, batchStart }) {
   }[dataset];
   if (!name) throw new Error("Dataset inválido: " + dataset);
 
-  let sh = ss.getSheetByName(name);
-  if (!sh) sh = ss.insertSheet(name);
+  // Lock: sin él, dos personas subiendo a la vez (o un reintento cruzado con
+  // una carga en curso) intercalaban lotes de datasets distintos y el Sheet
+  // quedaba con una mezcla corrupta. También serializa contra las escrituras
+  // de reviews.
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(30000); }
+  catch (e) { throw new Error("Lock timeout (otra carga en curso): " + e.message); }
 
-  if (clear) sh.clear();
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sh = ss.getSheetByName(name);
+    if (!sh) sh = ss.insertSheet(name);
 
-  if (!rows || !rows.length) return { ok: true, count: 0 };
+    if (clear) {
+      sh.clear();
+      // Anotar el total esperado ANTES de escribir datos: si la carga muere a
+      // medias, el desbalance filas-reales vs esperadas queda detectable.
+      // Clientes antiguos no mandan totalRows → 0 = "sin información".
+      writeMeta_(ss, dataset, (typeof totalRows === "number" && totalRows > 0) ? totalRows : 0);
+    }
 
-  // Si es la primera carga, escribir headers a partir de las claves del primer objeto.
-  const headers = Object.keys(rows[0]);
-  if (clear) {
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    if (!rows || !rows.length) return { ok: true, count: 0 };
+
+    // Si es la primera carga, escribir headers a partir de las claves del primer objeto.
+    const headers = Object.keys(rows[0]);
+    if (clear) {
+      sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
+
+    // Escritura idempotente: si el cliente envía batchStart (índice de la
+    // primera fila del lote dentro del dataset), la fila destino es
+    // determinista (headers en fila 1 → datos desde fila 2). Un lote repetido
+    // —porque Google aplicó el POST pero respondió con HTML de rate-limit y el
+    // cliente reintentó— sobreescribe su propio rango en vez de appendearse al
+    // final (eso triplicó facturas en jul-2026). Clientes antiguos no envían
+    // batchStart y conservan el append.
+    const startRow = (typeof batchStart === "number" && batchStart >= 0)
+      ? batchStart + 2
+      : sh.getLastRow() + 1;
+    const values = rows.map(o => headers.map(h => o[h] ?? ""));
+    sh.getRange(startRow, 1, values.length, headers.length).setValues(values);
+
+    return { ok: true, count: rows.length, isLast: !!isLast };
+  } finally {
+    lock.releaseLock();
   }
-
-  // Escritura idempotente: si el cliente envía batchStart (índice de la
-  // primera fila del lote dentro del dataset), la fila destino es
-  // determinista (headers en fila 1 → datos desde fila 2). Un lote repetido
-  // —porque Google aplicó el POST pero respondió con HTML de rate-limit y el
-  // cliente reintentó— sobreescribe su propio rango en vez de appendearse al
-  // final (eso triplicó facturas en jul-2026). Clientes antiguos no envían
-  // batchStart y conservan el append.
-  const startRow = (typeof batchStart === "number" && batchStart >= 0)
-    ? batchStart + 2
-    : sh.getLastRow() + 1;
-  const values = rows.map(o => headers.map(h => o[h] ?? ""));
-  sh.getRange(startRow, 1, values.length, headers.length).setValues(values);
-
-  return { ok: true, count: rows.length, isLast: !!isLast };
 }
 
 function saveReview_({ key, estado, nota, snapshot }) {

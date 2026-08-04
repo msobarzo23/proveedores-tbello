@@ -22,6 +22,7 @@ const LS_KEYS = {
   REVIEWS_PENDING: "data_reviews_pending", // keys con cambios locales aún no confirmados por GAS
   TIMESTAMPS: "data_timestamps",
   PENDING_DATASETS: "data_pending_datasets", // datasets que fallaron al guardar en GAS y deben reintentarse
+  GAS_VERSION_SEEN: "gas_version_seen", // última versión de Code.gs reportada por load_all
 };
 
 // Bump cuando la URL por defecto cambie o haya que forzar limpieza de URLs viejas.
@@ -532,23 +533,38 @@ export async function retryPendingDatasets(onProgress) {
   return results;
 }
 
-// Sube el dataset en lotes. Un POST cuya respuesta no se pudo leer (HTML de
-// rate-limit de Google, corte de red) es AMBIGUO: el Sheet pudo haberlo
-// escrito igual. Reintentar solo ese lote duplicaba filas — así se
-// triplicaron facturas en jul-2026 (montos ×3 en la app). Ante ambigüedad se
-// reinicia la subida completa desde el lote 0 con clear=true, lo que deja la
-// hoja consistente sin importar qué alcanzó a escribirse.
+// Sube el dataset en lotes. La estrategia depende de la versión del GAS
+// desplegado (reportada por load_all y cacheada en localStorage):
+//
+// GAS >= 3 (escritura idempotente por batchStart): un lote repetido
+// sobreescribe su propio rango, así que ante un error AMBIGUO (HTML de
+// rate-limit, corte de red — el Sheet pudo haberlo escrito igual) es seguro
+// reintentar SOLO ese lote con backoff, y si aun así falla, reanudar la
+// subida desde el lote caído sin borrar lo ya escrito. Antes cualquier error
+// transitorio abortaba la subida completa y el reintento partía del lote 0
+// con clear=true — con archivos grandes (26+ lotes) el rate-limit de Google
+// hacía imposible completar los 3 intentos y la hoja quedaba truncada
+// (ago-2026: Referencia Fact.cl cortado en 2.000 de 12.886 filas).
+//
+// GAS viejo (append): reintentar un lote ambiguo duplicaba filas — así se
+// triplicaron facturas en jul-2026 (montos ×3). Ahí se conserva la conducta
+// conservadora: sin reintento por lote y reinicio completo con clear=true.
 async function postDataset(url, dataset, rows, onProgress) {
   const total = rows.length;
   const batches = Math.max(1, Math.ceil(total / BATCH_SIZE));
+  const idempotent = (Number(lsGet(LS_KEYS.GAS_VERSION_SEEN, 0)) || 0) >= 3;
   const MAX_UPLOAD_ATTEMPTS = 3;
   let lastErr = null;
+  let resumeFrom = 0; // índice de fila del primer lote NO confirmado
   for (let attempt = 0; attempt < MAX_UPLOAD_ATTEMPTS; attempt++) {
-    // Espera larga antes de reintentar la subida completa: si Google está
+    // Espera larga antes de reintentar la subida: si Google está
     // rate-limiteando, insistir de inmediato solo alarga el problema.
     if (attempt > 0) await new Promise(r => setTimeout(r, 5000 * attempt + Math.random() * 1000));
+    // Con GAS idempotente se reanuda desde el lote caído; con GAS viejo se
+    // reinicia desde cero (clear=true re-limpia la hoja).
+    const startAt = idempotent ? resumeFrom : 0;
     try {
-      for (let i = 0, b = 0; i < total; i += BATCH_SIZE, b++) {
+      for (let i = startAt, b = Math.floor(startAt / BATCH_SIZE); i < total; i += BATCH_SIZE, b++) {
         const batch = rows.slice(i, i + BATCH_SIZE);
         const isFirst = i === 0;
         const isLast = i + BATCH_SIZE >= total;
@@ -567,7 +583,8 @@ async function postDataset(url, dataset, rows, onProgress) {
           // quedó a medias (filas en el Sheet < total esperado) y avisarlo en
           // vez de mostrar datos truncados como si estuvieran completos.
           totalRows: total,
-        }, { retryTransient: false });
+        }, { retryTransient: idempotent });
+        resumeFrom = i + BATCH_SIZE;
         if (onProgress) onProgress({ dataset, batch: b + 1, batches, rows: Math.min(i + BATCH_SIZE, total), total });
         if (!isLast) await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
       }
@@ -649,6 +666,9 @@ export async function loadAll() {
       // por dataset (anotado al iniciar cada carga). Si el Sheet tiene menos
       // filas, la carga de alguien quedó a medias y hay que avisarlo.
       const gasVersion = Number(json.gasVersion) || 0;
+      // Recordar la versión del backend: postDataset la usa para decidir si
+      // los reintentos por lote son seguros (escritura idempotente en v3+).
+      lsSet(LS_KEYS.GAS_VERSION_SEEN, gasVersion);
       const incompleteDatasets = [];
       if (json.meta) {
         for (const ds of ["defontana", "oc", "factcl", "compra"]) {

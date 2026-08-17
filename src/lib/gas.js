@@ -211,6 +211,25 @@ function canonicalizeReviews(reviews) {
   return out;
 }
 
+// ¿a es estrictamente más reciente que b? Comparación TOLERANTE: el
+// updated_at local sale del reloj del navegador y el que vuelve de GAS pasó
+// por un round-trip por Google Sheets (que convierte el ISO a fecha y pierde
+// los milisegundos) o fue estampado por el reloj del servidor. Comparar
+// strings a secas hacía que una review local pareciera "más nueva" que su
+// copia del Sheet PARA SIEMPRE → el banner decía "todo sincronizado" tras
+// subir, pero al reabrir la app volvía a acusar pendientes que no existían.
+// Diferencias de hasta 2s se consideran "la misma versión".
+function isNewerThan(a, b) {
+  const sa = String(a || "");
+  const sb = String(b || "");
+  if (!sa) return false;
+  if (!sb) return true;
+  const ta = Date.parse(sa);
+  const tb = Date.parse(sb);
+  if (!isNaN(ta) && !isNaN(tb)) return ta - tb > 2000;
+  return sa > sb;
+}
+
 // Combina reviews de GAS con las locales preservando las locales que GAS no
 // tiene (probablemente saves que nunca llegaron a sincronizar) y las locales
 // más recientes que GAS (cambios hechos antes que GAS lo refleje).
@@ -221,10 +240,8 @@ function mergeReviews(gasReviews, localReviews) {
     const grev = out[key];
     if (!grev) {
       out[key] = lrev;
-    } else {
-      const lt = String(lrev.updated_at || "");
-      const gt = String(grev.updated_at || "");
-      if (lt && lt > gt) out[key] = lrev;
+    } else if (isNewerThan(lrev.updated_at, grev.updated_at)) {
+      out[key] = lrev;
     }
   }
   return out;
@@ -239,9 +256,7 @@ function computePendingSyncKeys(localReviews, gasReviews) {
     if (!lrev) continue;
     const grev = (gasReviews || {})[key];
     if (!grev) { candidates.add(key); continue; }
-    const lt = String(lrev.updated_at || "");
-    const gt = String(grev.updated_at || "");
-    if (lt && lt > gt) candidates.add(key);
+    if (isNewerThan(lrev.updated_at, grev.updated_at)) candidates.add(key);
   }
   return candidates;
 }
@@ -283,6 +298,10 @@ async function syncReviewKeys(url, keys, localReviews, onProgress) {
           estado: rev.estado,
           nota: rev.nota || "",
           snapshot: rev.snapshot || null,
+          // El server (GAS v5+) guarda ESTE updated_at en vez de estampar su
+          // propio reloj: así el próximo load_all devuelve el mismo valor y
+          // la review no queda como "pendiente" eterna por desfase de relojes.
+          updated_at: rev.updated_at || "",
         } : null;
       })
       .filter(Boolean);
@@ -319,6 +338,7 @@ async function syncReviewKeys(url, keys, localReviews, onProgress) {
             estado: r.estado,
             nota: r.nota,
             snapshot: r.snapshot,
+            updated_at: r.updated_at,
           });
           done++;
         } catch (e) {
@@ -808,14 +828,15 @@ export async function saveReview(key, estado, nota = "", snapshot = null) {
   // se serializan a través del mutex. Sin esto, lsGet+modify+lsSet desde
   // múltiples saves se pisaban y data_reviews perdía la mayoría de las
   // entradas localmente.
-  const savedSnapshot = await withLsLock(() => {
+  const { savedSnapshot, savedUpdatedAt } = await withLsLock(() => {
     const reviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
     const existing = reviews[key] || {};
     const snap = snapshot || existing.snapshot || null;
+    const updated_at = new Date().toISOString();
     reviews[key] = {
       estado,
       nota,
-      updated_at: new Date().toISOString(),
+      updated_at,
       snapshot: snap,
     };
     lsSet(LS_KEYS.REVIEWS, reviews);
@@ -826,7 +847,7 @@ export async function saveReview(key, estado, nota = "", snapshot = null) {
     const pend = lsGet(LS_KEYS.REVIEWS_PENDING, []);
     const arr = Array.isArray(pend) ? pend : [];
     if (!arr.includes(key)) { arr.push(key); lsSet(LS_KEYS.REVIEWS_PENDING, arr); }
-    return snap;
+    return { savedSnapshot: snap, savedUpdatedAt: updated_at };
   });
 
   const url = getGasUrl();
@@ -842,6 +863,10 @@ export async function saveReview(key, estado, nota = "", snapshot = null) {
       estado,
       nota,
       snapshot: savedSnapshot,
+      // GAS v5+ guarda este updated_at tal cual (no estampa su reloj): el
+      // valor que vuelve en load_all es idéntico al local y la review no
+      // queda como falso pendiente por desfase de relojes.
+      updated_at: savedUpdatedAt,
     });
     await withLsLock(() => removePendingReviewKey(key));
     return { ok: true, source: "gas" };
@@ -882,7 +907,7 @@ export async function archiveReviews(keys, onProgress) {
     const toUpload = batch
       .map(k => {
         const rev = localReviews[k];
-        return rev ? { key: k, estado: rev.estado, nota: rev.nota || "", snapshot: rev.snapshot || null } : null;
+        return rev ? { key: k, estado: rev.estado, nota: rev.nota || "", snapshot: rev.snapshot || null, updated_at: rev.updated_at || "" } : null;
       })
       .filter(Boolean);
     for (let u = 0; u < toUpload.length; u += REVIEWS_BATCH_SIZE) {

@@ -47,6 +47,7 @@ function setup() {
   if (arch.getLastRow() === 0) {
     arch.getRange(1, 1, 1, 6).setValues([["key", "estado", "nota", "updated_at", "snapshot", "archived_at"]]);
   }
+  ensureTextUpdatedAt_(rev);
 }
 
 function doGet(e) {
@@ -161,6 +162,7 @@ function archiveReviews_({ keys }) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sh = ss.getSheetByName(SHEETS.REVIEWS);
     if (!sh || sh.getLastRow() < 2) return { ok: true, archived: 0, missing: keys.length };
+    ensureTextUpdatedAt_(sh);
 
     let arch = ss.getSheetByName(SHEETS.REVIEWS_ARCHIVE);
     if (!arch) {
@@ -306,7 +308,16 @@ function saveDataset_({ dataset, rows, clear, isLast, batchStart, totalRows }) {
   }
 }
 
-function saveReview_({ key, estado, nota, snapshot }) {
+// La columna updated_at (D) de Reviews debe ser TEXTO PLANO: si Sheets la
+// interpreta como fecha, el round-trip pierde los milisegundos del ISO y la
+// review vuelve "distinta" a la copia local → el cliente la acusa como
+// pendiente de sincronizar para siempre. Formatear la columna como "@" hace
+// que los strings entren y salgan byte a byte idénticos.
+function ensureTextUpdatedAt_(sh) {
+  sh.getRange(1, 4, sh.getMaxRows(), 1).setNumberFormat("@");
+}
+
+function saveReview_({ key, estado, nota, snapshot, updated_at }) {
   if (!key) throw new Error("key requerido");
 
   // Lock para serializar con saveReviewsBatch_ y con otras instancias de
@@ -322,10 +333,15 @@ function saveReview_({ key, estado, nota, snapshot }) {
       sh = ss.insertSheet(SHEETS.REVIEWS);
       sh.getRange(1, 1, 1, 5).setValues([["key", "estado", "nota", "updated_at", "snapshot"]]);
     }
+    ensureTextUpdatedAt_(sh);
 
-    const now = new Date().toISOString();
+    // Conservar el updated_at que manda el cliente (es su número de versión
+    // lógico): si el server estampara su propio reloj, un navegador con la
+    // hora adelantada vería su copia local "más nueva" que la del Sheet
+    // eternamente. Fallback al reloj del server para clientes antiguos.
+    const upd = updated_at ? String(updated_at) : new Date().toISOString();
     const snapStr = snapshot ? JSON.stringify(snapshot) : "";
-    const rowValues = [key, estado, nota || "", now, snapStr];
+    const rowValues = [key, estado, nota || "", upd, snapStr];
 
     const lastRow = sh.getLastRow();
     if (lastRow > 1) {
@@ -368,6 +384,7 @@ function saveReviewsBatch_({ reviews }) {
       sh = ss.insertSheet(SHEETS.REVIEWS);
       sh.getRange(1, 1, 1, 5).setValues([["key", "estado", "nota", "updated_at", "snapshot"]]);
     }
+    ensureTextUpdatedAt_(sh);
 
     // Una sola lectura: key + snapshot existente (para preservarlo cuando el
     // cliente no manda snapshot nuevo).
@@ -393,16 +410,19 @@ function saveReviewsBatch_({ reviews }) {
     for (const rev of reviews) {
       if (!rev || !rev.key) continue;
       let snapStr = rev.snapshot ? JSON.stringify(rev.snapshot) : "";
+      // Conservar el updated_at del cliente (ver saveReview_); fallback al
+      // reloj del server para clientes antiguos que no lo mandan.
+      const upd = rev.updated_at ? String(rev.updated_at) : now;
       const existingRow = keyToRow[rev.key];
       if (existingRow) {
         if (!rev.snapshot && existingSnapByKey[rev.key]) snapStr = existingSnapByKey[rev.key];
         toUpdate.push({
           rowIndex: existingRow,
-          values: [rev.key, rev.estado, rev.nota || "", now, snapStr],
+          values: [rev.key, rev.estado, rev.nota || "", upd, snapStr],
         });
         updated++;
       } else {
-        toAppend.push([rev.key, rev.estado, rev.nota || "", now, snapStr]);
+        toAppend.push([rev.key, rev.estado, rev.nota || "", upd, snapStr]);
         inserted++;
       }
     }

@@ -5,7 +5,7 @@ import { normRut, normFolio, normOC } from "./parsers";
 // Versión de gas/Code.gs que este cliente espera. loadAll_ la devuelve como
 // gasVersion; si el Web App desplegado es más viejo (o no la reporta), la UI
 // muestra un aviso para redeployar (paso manual en Apps Script).
-export const EXPECTED_GAS_VERSION = 4;
+export const EXPECTED_GAS_VERSION = 5;
 
 // URL por defecto del Web App. Si el usuario guarda otra en ⚙️ en su
 // navegador, esa toma precedencia (permite cambiar de hoja sin redeployar).
@@ -734,6 +734,20 @@ export async function loadAll() {
       syncPendingReviewsToGAS(url, mergedReviews, gasReviews)
         .catch(e => console.warn("Error sincronizando reviews pendientes:", e));
 
+      // Reparación en background: reviews "resucitadas" — presentes en la
+      // hoja Reviews Y en el archivo a la vez (las re-creó el bug de la
+      // migración fantasma→Defontana, o un navegador con copia vieja).
+      // Re-archivarlas las saca de Reviews; solo con GAS v5+, que al ver una
+      // key ya archivada la quita sin duplicar la fila en ReviewsArchivo.
+      if (gasVersion >= 5 && archivedSet.size) {
+        const resucitadas = Object.keys(gasReviews).filter(k => archivedSet.has(k));
+        if (resucitadas.length) {
+          postJSON(url, { action: "archive_reviews", keys: resucitadas })
+            .then(r => console.info(`Limpieza de ${resucitadas.length} reviews resucitadas:`, r))
+            .catch(e => console.warn("Limpieza de reviews resucitadas falló:", e.message));
+        }
+      }
+
       const local = normalizeDatasets({
         defontana: pending.has("defontana") ? dedupeBatchEchoes(lsGet(LS_KEYS.DEFONTANA, []) || []) : null,
         oc:        pending.has("oc")        ? dedupeBatchEchoes(lsGet(LS_KEYS.OC, []) || [])        : null,
@@ -857,6 +871,24 @@ export async function archiveReviews(keys, onProgress) {
 
   for (let i = 0; i < keys.length; i += ARCHIVE_BATCH_SIZE) {
     const batch = keys.slice(i, i + ARCHIVE_BATCH_SIZE);
+
+    // Subir PRIMERO al Sheet las reviews del lote (upsert idempotente): las
+    // que viven solo en este navegador (POSTs que fallaron en su momento) no
+    // existen en la hoja Reviews, y archive_reviews solo mueve lo que está
+    // ahí — sin este paso quedaban "missing", el cache local las daba por
+    // archivadas, y el próximo load_all (que manda archivedKeys del Sheet)
+    // las hacía reaparecer eternamente.
+    const localReviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
+    const toUpload = batch
+      .map(k => {
+        const rev = localReviews[k];
+        return rev ? { key: k, estado: rev.estado, nota: rev.nota || "", snapshot: rev.snapshot || null } : null;
+      })
+      .filter(Boolean);
+    for (let u = 0; u < toUpload.length; u += REVIEWS_BATCH_SIZE) {
+      await postJSON(url, { action: "save_reviews_batch", reviews: toUpload.slice(u, u + REVIEWS_BATCH_SIZE) });
+    }
+
     let r;
     try {
       r = await postJSON(url, { action: "archive_reviews", keys: batch });

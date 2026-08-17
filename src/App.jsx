@@ -83,6 +83,9 @@ export default function App() {
       //     distinguir "no se cargó" de "ya no existe".
       const haveDefontana = r.defontana && r.defontana.length > 0;
       if (haveDefontana) {
+        // Índice de archivadas del load recién hecho (el estado archivedKeys
+        // aún no se actualiza dentro de este callback).
+        const archIdx = buildArchivedIndex(r.archivedKeys || []);
         const grouped = groupDefontanaByInvoice(r.defontana);
         const keysNuevos = new Set(grouped.map(inv => inv.key));
         // Índice por rut|folio: si el nuevo Defontana trae la misma factura
@@ -122,6 +125,13 @@ export default function App() {
             const folio = parts[2] || "";
             const newInv = invByRutFolio.get(`${rut}|${folio}`);
             if (!newInv) continue;
+            // Si la factura ya fue procesada y ARCHIVADA (pagada + OK/REVISADA
+            // movida a ReviewsArchivo), no hay ingreso que controlar. Sin este
+            // gate, la migración re-creaba la review como PENDIENTE en cada
+            // refresh (la key archivada ya no está en reviews), la purga de
+            // loadAll la borraba, y el ciclo llenaba el banner de "revisiones
+            // sin sincronizar" con keys que resucitaban en el Sheet.
+            if (esFacturaArchivada(archIdx, newInv)) continue;
             const newKey = newInv.key;
             // No pisar si la nueva key ya tiene una review más reciente.
             const existente = updatedReviews[newKey];

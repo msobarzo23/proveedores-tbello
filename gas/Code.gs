@@ -13,7 +13,7 @@
 
 // Versión del backend. El cliente la compara con la que espera y muestra un
 // aviso si el Web App desplegado está desactualizado. Subirla en cada cambio.
-const GAS_VERSION = 4;
+const GAS_VERSION = 5;
 
 const SHEETS = {
   DEFONTANA: "Defontana",
@@ -171,25 +171,42 @@ function archiveReviews_({ keys }) {
     const wanted = {};
     keys.forEach(function (k) { if (k) wanted[String(k)] = true; });
 
+    // Keys que ya están en el archivo: si vuelven a llegar (p.ej. una review
+    // "resucitada" en Reviews por un cliente con copia vieja), se quitan de
+    // Reviews pero NO se re-appendean — el archivo no acumula duplicados.
+    const yaArchivadas = {};
+    if (arch.getLastRow() > 1) {
+      arch.getRange(2, 1, arch.getLastRow() - 1, 1).getValues()
+        .forEach(function (r) { if (r[0]) yaArchivadas[String(r[0])] = true; });
+    }
+
     const data = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues();
     const keep = [];
     const move = [];
+    let dropped = 0;
     const now = new Date().toISOString();
     for (let i = 0; i < data.length; i++) {
       const k = String(data[i][0] || "");
-      if (k && wanted[k]) move.push([data[i][0], data[i][1], data[i][2], data[i][3], data[i][4], now]);
-      else keep.push(data[i]);
+      if (k && wanted[k]) {
+        if (yaArchivadas[k]) { dropped++; continue; }
+        move.push([data[i][0], data[i][1], data[i][2], data[i][3], data[i][4], now]);
+        yaArchivadas[k] = true; // por si la key viene duplicada en Reviews
+      } else {
+        keep.push(data[i]);
+      }
     }
 
-    if (move.length) {
-      arch.getRange(arch.getLastRow() + 1, 1, move.length, 6).setValues(move);
+    if (move.length || dropped) {
+      if (move.length) {
+        arch.getRange(arch.getLastRow() + 1, 1, move.length, 6).setValues(move);
+      }
       // Reescribir Reviews sin las archivadas (limpiar el rango viejo completo
       // para no dejar filas fantasma al final).
       sh.getRange(2, 1, data.length, 5).clearContent();
       if (keep.length) sh.getRange(2, 1, keep.length, 5).setValues(keep);
     }
 
-    return { ok: true, archived: move.length, missing: Math.max(0, keys.length - move.length) };
+    return { ok: true, archived: move.length, dropped: dropped, missing: Math.max(0, keys.length - move.length - dropped) };
   } finally {
     lock.releaseLock();
   }

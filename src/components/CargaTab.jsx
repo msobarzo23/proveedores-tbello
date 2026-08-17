@@ -3,8 +3,9 @@ import FileDrop from "./FileDrop";
 import { parseDefontana, parseReporteOC, parseReferenciaFactCL, parseInformeCompraFactCL } from "../lib/parsers";
 import {
   saveDefontana, saveOC, saveFactCL, saveInformeCompra,
-  getTimestamps, getPendingDatasets, retryPendingDatasets,
+  getTimestamps, getPendingDatasets, retryPendingDatasets, getArchivedKeys,
 } from "../lib/gas";
+import { buildArchivedIndex, filtrarDefontanaArchivadas } from "../lib/archivo";
 import { IconCheck, IconAlert, IconRefresh } from "./Icons";
 
 const DATASET_LABELS = {
@@ -44,9 +45,27 @@ export default function CargaTab({ onDataChanged }) {
     const out = [];
     const errors = [];
     const warnings = [];
+    const infos = [];
+
+    // Excluir del Defontana las facturas ya archivadas que siguen saldadas:
+    // sus filas no aportan nada y cada una cuesta subida (lotes POST contra el
+    // rate-limit de Google), bajada y espacio en localStorage. Si una
+    // archivada vuelve con saldo ≠ 0, el filtro la deja pasar y revive.
+    let defontanaRows = pending.defontana;
+    if (defontanaRows) {
+      const idx = buildArchivedIndex(getArchivedKeys());
+      const f = filtrarDefontanaArchivadas(defontanaRows, idx);
+      if (f.filasExcluidas > 0) {
+        defontanaRows = f.rows;
+        infos.push(
+          `Defontana: se excluyeron ${f.filasExcluidas.toLocaleString("es-CL")} filas de ` +
+          `${f.facturasExcluidas.toLocaleString("es-CL")} facturas archivadas (pagadas ya procesadas)`
+        );
+      }
+    }
 
     const datasets = [
-      ["defontana", pending.defontana, saveDefontana],
+      ["defontana", defontanaRows,     saveDefontana],
       ["oc",        pending.oc,        saveOC],
       ["factcl",    pending.factcl,    saveFactCL],
       ["compra",    pending.compra,    saveInformeCompra],
@@ -83,6 +102,7 @@ export default function CargaTab({ onDataChanged }) {
       setResult({
         ok: allOk,
         msg: msgs
+          + (infos.length ? ` · 🗄 ${infos.join(", ")}` : "")
           + (warnings.length ? ` · ⚠️ ${warnings.join(", ")}` : "")
           + (errors.length ? ` · ❌ ${errors.join(", ")}` : ""),
       });

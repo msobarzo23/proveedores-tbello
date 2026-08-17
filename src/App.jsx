@@ -3,9 +3,10 @@ import CargaTab from "./components/CargaTab";
 import InvoiceTable from "./components/InvoiceTable";
 import FantasmaTable from "./components/FantasmaTable";
 import { IconUpload, IconSearch, IconAlert, IconRefresh, IconGear } from "./components/Icons";
-import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews, getPendingReviewsCount, getPendingDatasets, retryPendingDatasets, EXPECTED_GAS_VERSION } from "./lib/gas";
+import { loadAll, saveReview, getGasUrl, setGasUrl, resetGasUrl, DEFAULT_GAS_URL, forceSyncPendingReviews, getPendingReviewsCount, getPendingDatasets, retryPendingDatasets, archiveReviews, EXPECTED_GAS_VERSION } from "./lib/gas";
 import { groupDefontanaByInvoice } from "./lib/parsers";
 import { buildCrossref, applyReviewState, findFactCLSinDefontana } from "./lib/crossref";
+import { buildArchivedIndex, esFacturaArchivada } from "./lib/archivo";
 import { loadHistoricoCredito } from "./lib/historico";
 import { loadFactoring } from "./lib/factoring";
 
@@ -26,6 +27,7 @@ export default function App() {
   const [factcl, setFactcl] = useState([]);
   const [compra, setCompra] = useState([]);
   const [reviews, setReviews] = useState({});
+  const [archivedKeys, setArchivedKeys] = useState([]);
   const [historicoCredito, setHistoricoCredito] = useState(new Set());
   const [historicoCount, setHistoricoCount] = useState(0);
   const [factoringByRut, setFactoringByRut] = useState(new Map());
@@ -177,6 +179,7 @@ export default function App() {
       setFactcl(r.factcl || []);
       setCompra(r.compra || []);
       setReviews(updatedReviews);
+      setArchivedKeys(r.archivedKeys || []);
       setSource(r.source);
       setHistoricoCredito(h.set);
       setHistoricoCount(h.count);
@@ -289,8 +292,14 @@ export default function App() {
   // en el Defontana actual (auto-conciliadas o eliminadas). Si la review tiene
   // snapshot, se usa para llenar proveedor/vencimiento/montos; igual pasa por
   // buildCrossref para que Fact.cl/Informe de Compra rellenen lo que puedan.
+  // Facturas archivadas (pagadas + ya procesadas, movidas a ReviewsArchivo):
+  // índice para excluirlas del pipeline. Si una reaparece con saldo ≠ 0 en un
+  // Defontana futuro, esFacturaArchivada la deja pasar y revive sola.
+  const archivedIdx = useMemo(() => buildArchivedIndex(archivedKeys), [archivedKeys]);
+
   const enrichedAll = useMemo(() => {
-    const grouped = groupDefontanaByInvoice(defontana);
+    const grouped = groupDefontanaByInvoice(defontana)
+      .filter(inv => !esFacturaArchivada(archivedIdx, inv));
     const realKeys = new Set(grouped.map(g => g.key));
     // Si la review apunta a la misma factura que ya está en el Defontana
     // actual (mismo rut+folio aunque difiera tipoDoc), no la inyectamos como
@@ -312,6 +321,9 @@ export default function App() {
       // Las reviews con prefijo FCL| pertenecen a la pestaña "Sin registro";
       // no las re-inyectamos al listado principal como phantoms.
       if (key.startsWith("FCL|")) continue;
+      // Reviews archivadas: no deben volver como phantom (pueden seguir en
+      // una copia local vieja aunque GAS ya no las mande).
+      if (archivedIdx.exact.has(key)) continue;
       if (realKeys.has(key)) continue;
       const parts = String(key).split("|");
       if (parts.length >= 2 && realRutFolio.has(`${parts[0]}|${parts[1]}`)) continue;
@@ -350,7 +362,7 @@ export default function App() {
     if (!grouped.length && !phantoms.length) return [];
     const crossed = buildCrossref([...grouped, ...phantoms], oc, factcl, historicoCredito, compra, factoringByRut, reviews);
     return applyReviewState(crossed, reviews);
-  }, [defontana, oc, factcl, compra, reviews, historicoCredito, factoringByRut]);
+  }, [defontana, oc, factcl, compra, reviews, historicoCredito, factoringByRut, archivedIdx]);
 
   // Mantener ref en sync para el auto-conciliador de refresh.
   useEffect(() => { enrichedRef.current = enrichedAll; }, [enrichedAll]);
@@ -377,9 +389,13 @@ export default function App() {
   // Usan keys con prefijo "FCL|" para no chocar con las reviews del flujo principal.
   const fantasmaAll = useMemo(() => {
     const grouped = groupDefontanaByInvoice(defontana);
-    const raw = findFactCLSinDefontana(grouped, compra, factcl);
+    const raw = findFactCLSinDefontana(grouped, compra, factcl)
+      // Una factura archivada puede desaparecer del dataset Defontana (la
+      // subida la filtra) pero seguir viniendo en los archivos de Fact.cl del
+      // mismo período: no es "sin registro", estuvo en Defontana y se archivó.
+      .filter(f => !archivedIdx.rutFolio.has(`${f.rut}|${f.folio}`));
     return applyReviewState(raw, reviews);
-  }, [defontana, compra, factcl, reviews]);
+  }, [defontana, compra, factcl, reviews, archivedIdx]);
 
   const fantasmaPendientes = useMemo(
     () => fantasmaAll.filter(r => r.estadoRev === "PENDIENTE" || r.estadoRev === "REVISAR"),
@@ -442,6 +458,17 @@ export default function App() {
       setPendingSyncCount(getPendingReviewsCount());
     }
   }, []);
+
+  // Archiva facturas del Histórico (pagadas + OK/REVISADA): mueve sus reviews
+  // a la hoja ReviewsArchivo del Sheet y refresca para que salgan del listado
+  // y de las próximas cargas. El detalle queda consultable en el Google Sheet.
+  const handleArchive = useCallback(async (rowsToArchive, onProgress) => {
+    const keys = rowsToArchive.map(r => r.key).filter(Boolean);
+    if (!keys.length) return { ok: true, total: 0, archived: 0 };
+    const r = await archiveReviews(keys, onProgress);
+    await refresh();
+    return r;
+  }, [refresh]);
 
   // Dispara la sincronización manual de reviews pendientes. Re-fetchea GAS,
   // calcula qué falta, y las sube una por una mostrando progreso. Al terminar,
@@ -961,8 +988,11 @@ export default function App() {
           <>
             <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
               Facturas ya procesadas (OK o REVISADA). Se ocultan del listado principal.
+              Las pagadas (saldo $0) se pueden <strong style={{ color: "#94a3b8" }}>archivar</strong>:
+              salen de la app y de las próximas cargas, pero quedan guardadas en la hoja
+              ReviewsArchivo del Google Sheet.
             </div>
-            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} showEstadoFilter defaultShowPagadas exportName="historico" />
+            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} onArchive={handleArchive} showEstadoFilter defaultShowPagadas exportName="historico" />
           </>
         )}
       </div>

@@ -1,9 +1,9 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef, useDeferredValue } from "react";
 import { fmtCLP, fmtRut, fmtDate, STATE_COLORS, normalizeSearch, parseDate } from "../lib/ui";
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 import { exportFacturasExcel } from "../lib/export";
 
-export default function InvoiceTable({ rows, onMark, onNote, showProblems = false, showEstadoFilter = false, defaultShowPagadas = false, exportName = "facturas" }) {
+export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, showProblems = false, showEstadoFilter = false, defaultShowPagadas = false, exportName = "facturas" }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
@@ -11,12 +11,19 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
   const [showPagadas, setShowPagadas] = useState(defaultShowPagadas);
   const [sortCol, setSortCol] = useState("fechaFactura");
   const [sortDir, setSortDir] = useState("desc");
+  const [archiving, setArchiving] = useState(null); // { done, total } | null
+  const [archiveResult, setArchiveResult] = useState(null);
 
   const pagadasCount = useMemo(() => rows.filter(r => r.pagada).length, [rows]);
 
+  // Filtrar con la versión diferida del texto: con ~10.000 filas, re-filtrar
+  // y re-ordenar en cada tecla dejaba el input pegado. Con useDeferredValue
+  // el tipeo responde de inmediato y la tabla se actualiza apenas puede.
+  const deferredSearch = useDeferredValue(searchText);
+
   const filtered = useMemo(() => {
-    const qRaw = searchText.toLowerCase().trim();
-    const qNorm = normalizeSearch(searchText);
+    const qRaw = deferredSearch.toLowerCase().trim();
+    const qNorm = normalizeSearch(deferredSearch);
     return rows.filter(r => {
       // Las pagadas (saldo 0) se ocultan por defecto para enfocar lo pendiente,
       // PERO una factura sospechosa nunca se esconde por estar pagada: sigue
@@ -49,7 +56,7 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
       if (showEstadoFilter && filterEstado !== "TODAS" && r.estadoRev !== filterEstado) return false;
       return true;
     });
-  }, [rows, searchText, filterCond, filterAlert, filterEstado, showEstadoFilter, showPagadas, showProblems]);
+  }, [rows, deferredSearch, filterCond, filterAlert, filterEstado, showEstadoFilter, showPagadas, showProblems]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -96,6 +103,34 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
   const handleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
     else { setSortCol(col); setSortDir("asc"); }
+  };
+
+  // Candidatas a archivo: pagadas (saldo $0). En Histórico todas ya están
+  // OK/REVISADA, así que pagada es el único criterio que falta.
+  const archivables = useMemo(
+    () => (onArchive ? rows.filter(r => r.pagada) : []),
+    [rows, onArchive]
+  );
+
+  const handleArchiveClick = async () => {
+    if (!onArchive || archiving || !archivables.length) return;
+    const ok = window.confirm(
+      `Se archivarán ${archivables.length.toLocaleString("es-CL")} facturas pagadas (saldo $0) ya procesadas.\n\n` +
+      `Salen de la app y de las próximas cargas, pero el detalle (estado, comentarios) queda guardado ` +
+      `en la hoja "ReviewsArchivo" del Google Sheet.\n\n¿Continuar?`
+    );
+    if (!ok) return;
+    setArchiveResult(null);
+    setArchiving({ done: 0, total: archivables.length });
+    try {
+      const r = await onArchive(archivables, (p) => setArchiving(p));
+      setArchiveResult({ ok: true, msg: `✓ ${Number(r?.archived ?? archivables.length).toLocaleString("es-CL")} facturas archivadas` });
+      setTimeout(() => setArchiveResult(null), 8000);
+    } catch (e) {
+      setArchiveResult({ ok: false, msg: `⚠️ ${e.message}` });
+    } finally {
+      setArchiving(null);
+    }
   };
 
   const sospechosasCount = rows.filter(r => r.sospechosa).length;
@@ -230,7 +265,34 @@ export default function InvoiceTable({ rows, onMark, onNote, showProblems = fals
         >
           ⬇ Excel
         </button>
+        {onArchive && archivables.length > 0 && (
+          <button
+            onClick={handleArchiveClick}
+            disabled={!!archiving}
+            title="Mover las facturas pagadas (saldo $0) ya procesadas a la hoja ReviewsArchivo del Google Sheet. Dejan de cargarse y la app queda más rápida; el detalle sigue consultable en el Sheet."
+            style={exportBtnStyle("#f59e0b", !!archiving)}
+          >
+            {archiving
+              ? `Archivando… ${archiving.done.toLocaleString("es-CL")} / ${archiving.total.toLocaleString("es-CL")}`
+              : `🗄 Archivar pagadas (${archivables.length.toLocaleString("es-CL")})`}
+          </button>
+        )}
       </div>
+
+      {archiveResult && (
+        <div style={{
+          marginBottom: 12,
+          padding: "10px 14px",
+          borderRadius: 10,
+          fontSize: 12,
+          fontWeight: 600,
+          background: archiveResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
+          border: `1px solid ${archiveResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+          color: archiveResult.ok ? "#86efac" : "#f87171",
+        }}>
+          {archiveResult.msg}
+        </div>
+      )}
 
       <div style={{
         background: "rgba(30,41,59,0.4)",

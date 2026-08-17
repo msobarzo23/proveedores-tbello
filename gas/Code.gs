@@ -13,7 +13,7 @@
 
 // Versión del backend. El cliente la compara con la que espera y muestra un
 // aviso si el Web App desplegado está desactualizado. Subirla en cada cambio.
-const GAS_VERSION = 3;
+const GAS_VERSION = 4;
 
 const SHEETS = {
   DEFONTANA: "Defontana",
@@ -21,6 +21,7 @@ const SHEETS = {
   FACTCL: "FactCL",
   COMPRA: "Compra",
   REVIEWS: "Reviews",
+  REVIEWS_ARCHIVE: "ReviewsArchivo",
   META: "Meta",
 };
 
@@ -42,6 +43,10 @@ function setup() {
       rev.getRange(1, 1, 1, expected.length).setValues([expected]);
     }
   }
+  const arch = ss.getSheetByName(SHEETS.REVIEWS_ARCHIVE);
+  if (arch.getLastRow() === 0) {
+    arch.getRange(1, 1, 1, 6).setValues([["key", "estado", "nota", "updated_at", "snapshot", "archived_at"]]);
+  }
 }
 
 function doGet(e) {
@@ -61,6 +66,7 @@ function doPost(e) {
     if (action === "save_dataset")        return jsonOut(saveDataset_(body));
     if (action === "save_review")         return jsonOut(saveReview_(body));
     if (action === "save_reviews_batch")  return jsonOut(saveReviewsBatch_(body));
+    if (action === "archive_reviews")     return jsonOut(archiveReviews_(body));
     return jsonOut({ ok: false, error: "Acción desconocida: " + action });
   } catch (err) {
     return jsonOut({ ok: false, error: err.message });
@@ -121,7 +127,72 @@ function loadAll_() {
     });
   }
 
-  return { ok: true, gasVersion: GAS_VERSION, defontana, oc, factcl, compra, reviews, meta: readMeta_(ss) };
+  // Keys de reviews archivadas (facturas pagadas ya procesadas, movidas a la
+  // hoja ReviewsArchivo). Solo la columna key: el detalle (nota, snapshot) se
+  // queda en el Sheet y NO viaja en cada load_all — ese peso era justamente lo
+  // que hacía lenta la app. El cliente usa estas keys para excluir esas
+  // facturas del listado y para no re-subirlas desde copias locales viejas.
+  const archSheet = ss.getSheetByName(SHEETS.REVIEWS_ARCHIVE);
+  let archivedKeys = [];
+  if (archSheet && archSheet.getLastRow() > 1) {
+    archivedKeys = archSheet.getRange(2, 1, archSheet.getLastRow() - 1, 1).getValues()
+      .map(function (r) { return String(r[0] || ""); })
+      .filter(String);
+  }
+
+  return { ok: true, gasVersion: GAS_VERSION, defontana, oc, factcl, compra, reviews, archivedKeys, meta: readMeta_(ss) };
+}
+
+// ─── Archivo de reviews ───────────────────────────────────────────
+// Mueve reviews de la hoja Reviews a ReviewsArchivo (mismas columnas +
+// archived_at). Se usa para las facturas pagadas (saldo 0) ya procesadas:
+// dejan de viajar en load_all y de aparecer en la app, pero el trabajo de
+// revisión (estado, comentario, snapshot) queda guardado en el Sheet.
+// Idempotente: una key que ya no está en Reviews simplemente se salta, así
+// un reintento tras un rate-limit no duplica filas en el archivo.
+function archiveReviews_({ keys }) {
+  if (!Array.isArray(keys) || !keys.length) return { ok: true, archived: 0, missing: 0 };
+
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(60000); }
+  catch (e) { throw new Error("Lock timeout al archivar: " + e.message); }
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sh = ss.getSheetByName(SHEETS.REVIEWS);
+    if (!sh || sh.getLastRow() < 2) return { ok: true, archived: 0, missing: keys.length };
+
+    let arch = ss.getSheetByName(SHEETS.REVIEWS_ARCHIVE);
+    if (!arch) {
+      arch = ss.insertSheet(SHEETS.REVIEWS_ARCHIVE);
+      arch.getRange(1, 1, 1, 6).setValues([["key", "estado", "nota", "updated_at", "snapshot", "archived_at"]]);
+    }
+
+    const wanted = {};
+    keys.forEach(function (k) { if (k) wanted[String(k)] = true; });
+
+    const data = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues();
+    const keep = [];
+    const move = [];
+    const now = new Date().toISOString();
+    for (let i = 0; i < data.length; i++) {
+      const k = String(data[i][0] || "");
+      if (k && wanted[k]) move.push([data[i][0], data[i][1], data[i][2], data[i][3], data[i][4], now]);
+      else keep.push(data[i]);
+    }
+
+    if (move.length) {
+      arch.getRange(arch.getLastRow() + 1, 1, move.length, 6).setValues(move);
+      // Reescribir Reviews sin las archivadas (limpiar el rango viejo completo
+      // para no dejar filas fantasma al final).
+      sh.getRange(2, 1, data.length, 5).clearContent();
+      if (keep.length) sh.getRange(2, 1, keep.length, 5).setValues(keep);
+    }
+
+    return { ok: true, archived: move.length, missing: Math.max(0, keys.length - move.length) };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ─── Meta: total esperado por dataset ─────────────────────────────

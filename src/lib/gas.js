@@ -5,7 +5,7 @@ import { normRut, normFolio, normOC } from "./parsers";
 // Versión de gas/Code.gs que este cliente espera. loadAll_ la devuelve como
 // gasVersion; si el Web App desplegado es más viejo (o no la reporta), la UI
 // muestra un aviso para redeployar (paso manual en Apps Script).
-export const EXPECTED_GAS_VERSION = 3;
+export const EXPECTED_GAS_VERSION = 4;
 
 // URL por defecto del Web App. Si el usuario guarda otra en ⚙️ en su
 // navegador, esa toma precedencia (permite cambiar de hoja sin redeployar).
@@ -23,6 +23,7 @@ const LS_KEYS = {
   TIMESTAMPS: "data_timestamps",
   PENDING_DATASETS: "data_pending_datasets", // datasets que fallaron al guardar en GAS y deben reintentarse
   GAS_VERSION_SEEN: "gas_version_seen", // última versión de Code.gs reportada por load_all
+  ARCHIVED: "data_archived_keys", // keys de reviews archivadas (hoja ReviewsArchivo)
 };
 
 // Bump cuando la URL por defecto cambie o haya que forzar limpieza de URLs viejas.
@@ -687,6 +688,14 @@ export async function loadAll() {
       // haciendo que las facturas reaparecieran como PENDIENTE.
       const gasReviews = canonicalizeReviews(json.reviews || {});
 
+      // Keys archivadas (hoja ReviewsArchivo, GAS v4+). Se cachean para el
+      // modo local y para filtrar el Defontana en la próxima subida.
+      const archivedKeys = Array.isArray(json.archivedKeys)
+        ? Array.from(new Set(json.archivedKeys.map(canonReviewKey)))
+        : [];
+      const archivedSet = new Set(archivedKeys);
+      lsSet(LS_KEYS.ARCHIVED, archivedKeys);
+
       // Lock para evitar carrera con saveReview corriendo en paralelo: si
       // entremedio del merge alguien marca una review, la escritura podría
       // pisarla. Re-leemos localReviews adentro del lock para no usar una
@@ -694,6 +703,17 @@ export async function loadAll() {
       const { mergedReviews, pendingSyncKeys } = await withLsLock(() => {
         const localReviews = canonicalizeReviews(lsGet(LS_KEYS.REVIEWS, {}) || {});
         const merged = mergeReviews(gasReviews, localReviews);
+
+        // Purgar del merge las reviews ya archivadas. Sin esto, una copia
+        // local vieja (p.ej. el navegador de la compañera) las vería como
+        // "pendientes de subir" —GAS ya no las tiene en Reviews— y las
+        // resucitaría en el Sheet, deshaciendo el archivado.
+        if (archivedSet.size) {
+          for (const k of Object.keys(merged)) {
+            if (archivedSet.has(k)) delete merged[k];
+          }
+          setPendingReviewKeys(getPendingReviewKeys().filter(k => !archivedSet.has(canonReviewKey(k))));
+        }
 
         const pending = new Set(getPendingDatasets());
         if (json.defontana && !pending.has("defontana")) lsSet(LS_KEYS.DEFONTANA, json.defontana);
@@ -726,6 +746,7 @@ export async function loadAll() {
         factcl:    local.factcl   || json.factcl    || [],
         compra:    local.compra   || json.compra    || [],
         reviews: mergedReviews,
+        archivedKeys,
         source: pending.size > 0 ? "gas+pending" : "gas",
         pendingSyncCount: pendingSyncKeys.length,
         gasVersion,
@@ -750,12 +771,19 @@ function loadLocalOnly_() {
     factcl: dedupeBatchEchoes(lsGet(LS_KEYS.FACTCL, []) || []),
     compra: dedupeBatchEchoes(lsGet(LS_KEYS.COMPRA, []) || []),
     reviews: canonicalizeReviews(lsGet(LS_KEYS.REVIEWS, {}) || {}),
+    archivedKeys: getArchivedKeys(),
     source: "local",
     pendingSyncCount: getPendingReviewKeys().length,
     gasVersion: 0,
     incompleteDatasets: [],
   });
 }
+
+// Keys archivadas según el último load_all (cache local, canonicalizadas).
+export const getArchivedKeys = () => {
+  const arr = lsGet(LS_KEYS.ARCHIVED, []);
+  return Array.isArray(arr) ? arr.map(canonReviewKey) : [];
+};
 
 // ─── REVIEWS ────────────────────────────────────────────────────
 // snapshot: opcional, objeto con campos para preservar info de la fila
@@ -809,4 +837,61 @@ export async function saveReview(key, estado, nota = "", snapshot = null) {
     await withLsLock(() => addPendingReviewKey(key));
     return { ok: true, source: "local", warning: e.message };
   }
+}
+
+// ─── ARCHIVO DE REVIEWS ─────────────────────────────────────────
+// Mueve reviews (facturas pagadas ya procesadas) de la hoja Reviews a
+// ReviewsArchivo vía GAS. Lotes grandes: el payload son solo keys (~25 bytes
+// c/u) y la operación en GAS es idempotente (una key ya movida se salta), así
+// que reintentar ante rate-limit es seguro. Tras cada lote exitoso se limpian
+// las copias locales para que ningún navegador re-suba lo archivado.
+const ARCHIVE_BATCH_SIZE = 2000;
+
+export async function archiveReviews(keys, onProgress) {
+  const url = getGasUrl();
+  if (!url) throw new Error("No hay URL de Google Sheet configurada.");
+  const total = keys.length;
+  let done = 0;
+  let archived = 0;
+  if (onProgress) onProgress({ done: 0, total });
+
+  for (let i = 0; i < keys.length; i += ARCHIVE_BATCH_SIZE) {
+    const batch = keys.slice(i, i + ARCHIVE_BATCH_SIZE);
+    let r;
+    try {
+      r = await postJSON(url, { action: "archive_reviews", keys: batch });
+    } catch (e) {
+      if (isUnknownActionError(e)) {
+        throw new Error(
+          "El backend de Google Apps Script todavía no soporta archivar. " +
+          "Hay que pegar el gas/Code.gs nuevo en Apps Script y crear una versión nueva de la implementación (paso manual)."
+        );
+      }
+      throw e;
+    }
+    archived += Number(r.archived) || 0;
+
+    // Limpiar copias locales del lote confirmado (bajo lock, como toda
+    // operación read-modify-write sobre data_reviews).
+    await withLsLock(() => {
+      const canonBatch = batch.map(canonReviewKey);
+      const canonSet = new Set(canonBatch);
+      const reviews = lsGet(LS_KEYS.REVIEWS, {}) || {};
+      let changed = false;
+      for (const k of Object.keys(reviews)) {
+        if (canonSet.has(canonReviewKey(k))) { delete reviews[k]; changed = true; }
+      }
+      if (changed) lsSet(LS_KEYS.REVIEWS, reviews);
+      setPendingReviewKeys(getPendingReviewKeys().filter(k => !canonSet.has(canonReviewKey(k))));
+      const arch = new Set(getArchivedKeys());
+      for (const ck of canonBatch) arch.add(ck);
+      lsSet(LS_KEYS.ARCHIVED, Array.from(arch));
+    });
+
+    done += batch.length;
+    if (onProgress) onProgress({ done, total });
+    if (i + ARCHIVE_BATCH_SIZE < keys.length) await new Promise(res => setTimeout(res, BATCH_PAUSE_MS));
+  }
+
+  return { ok: true, total, archived };
 }

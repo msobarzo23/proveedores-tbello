@@ -5,7 +5,7 @@ import { normRut, normFolio, normOC } from "./parsers";
 // Versión de gas/Code.gs que este cliente espera. loadAll_ la devuelve como
 // gasVersion; si el Web App desplegado es más viejo (o no la reporta), la UI
 // muestra un aviso para redeployar (paso manual en Apps Script).
-export const EXPECTED_GAS_VERSION = 5;
+export const EXPECTED_GAS_VERSION = 6;
 
 // URL por defecto del Web App. Si el usuario guarda otra en ⚙️ en su
 // navegador, esa toma precedencia (permite cambiar de hoja sin redeployar).

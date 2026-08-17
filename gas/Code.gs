@@ -13,7 +13,7 @@
 
 // Versión del backend. El cliente la compara con la que espera y muestra un
 // aviso si el Web App desplegado está desactualizado. Subirla en cada cambio.
-const GAS_VERSION = 5;
+const GAS_VERSION = 6;
 
 const SHEETS = {
   DEFONTANA: "Defontana",
@@ -144,6 +144,27 @@ function loadAll_() {
   return { ok: true, gasVersion: GAS_VERSION, defontana, oc, factcl, compra, reviews, archivedKeys, meta: readMeta_(ss) };
 }
 
+// Normaliza una key de review para COMPARAR (no para almacenar): rut sin
+// puntos/guiones/espacios ni ceros a la izquierda, folio numérico sin ceros.
+// La hoja Reviews conserva keys guardadas por versiones viejas de la app
+// ("08626921K|1327|..." con cero en el rut) mientras el cliente moderno
+// siempre manda la forma canónica ("8626921K|1327|...") — con match exacto
+// esas reviews eran inarchivables para siempre. El tipoDoc (3er segmento) se
+// compara tal cual, igual que en el cliente.
+function normKeyForMatch_(k) {
+  const ks = String(k || "");
+  const parts = ks.split("|");
+  const fcl = parts[0] === "FCL";
+  const off = fcl ? 1 : 0;
+  if (parts.length < off + 2 || !parts[off] || !parts[off + 1]) return ks;
+  const rut = parts[off].replace(/[.\s\-]/g, "").toUpperCase().replace(/^0+(?=\w)/, "");
+  let folio = String(parts[off + 1]).trim();
+  const n = Number(folio.replace(/[^\d]/g, ""));
+  if (folio !== "" && !isNaN(n)) folio = String(n);
+  const rest = parts.slice(off + 2).join("|");
+  return (fcl ? "FCL|" : "") + rut + "|" + folio + (rest ? "|" + rest : "");
+}
+
 // ─── Archivo de reviews ───────────────────────────────────────────
 // Mueve reviews de la hoja Reviews a ReviewsArchivo (mismas columnas +
 // archived_at). Se usa para las facturas pagadas (saldo 0) ya procesadas:
@@ -170,8 +191,11 @@ function archiveReviews_({ keys }) {
       arch.getRange(1, 1, 1, 6).setValues([["key", "estado", "nota", "updated_at", "snapshot", "archived_at"]]);
     }
 
+    // Comparación por key NORMALIZADA (ver normKeyForMatch_): así la key
+    // canónica que manda el cliente encuentra también las filas guardadas con
+    // formas viejas (rut con cero a la izquierda, folio con ceros).
     const wanted = {};
-    keys.forEach(function (k) { if (k) wanted[String(k)] = true; });
+    keys.forEach(function (k) { if (k) wanted[normKeyForMatch_(k)] = true; });
 
     // Keys que ya están en el archivo: si vuelven a llegar (p.ej. una review
     // "resucitada" en Reviews por un cliente con copia vieja), se quitan de
@@ -179,7 +203,7 @@ function archiveReviews_({ keys }) {
     const yaArchivadas = {};
     if (arch.getLastRow() > 1) {
       arch.getRange(2, 1, arch.getLastRow() - 1, 1).getValues()
-        .forEach(function (r) { if (r[0]) yaArchivadas[String(r[0])] = true; });
+        .forEach(function (r) { if (r[0]) yaArchivadas[normKeyForMatch_(r[0])] = true; });
     }
 
     const data = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues();
@@ -189,10 +213,11 @@ function archiveReviews_({ keys }) {
     const now = new Date().toISOString();
     for (let i = 0; i < data.length; i++) {
       const k = String(data[i][0] || "");
-      if (k && wanted[k]) {
-        if (yaArchivadas[k]) { dropped++; continue; }
+      const nk = k ? normKeyForMatch_(k) : "";
+      if (nk && wanted[nk]) {
+        if (yaArchivadas[nk]) { dropped++; continue; }
         move.push([data[i][0], data[i][1], data[i][2], data[i][3], data[i][4], now]);
-        yaArchivadas[k] = true; // por si la key viene duplicada en Reviews
+        yaArchivadas[nk] = true; // por si la key viene con varias formas en Reviews
       } else {
         keep.push(data[i]);
       }

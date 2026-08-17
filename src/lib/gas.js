@@ -760,7 +760,11 @@ export async function loadAll() {
       // Re-archivarlas las saca de Reviews; solo con GAS v5+, que al ver una
       // key ya archivada la quita sin duplicar la fila en ReviewsArchivo.
       if (gasVersion >= 5 && archivedSet.size) {
-        const resucitadas = Object.keys(gasReviews).filter(k => archivedSet.has(k));
+        // Keys RAW tal como están en la hoja (json.reviews, sin canonicalizar):
+        // el match de archive_reviews en GAS es exacto, y la hoja puede tener
+        // formas viejas ("08626921K|..." con cero a la izquierda) que la key
+        // canónica nunca encontraría — el intento quedaría fallando en cada load.
+        const resucitadas = Object.keys(json.reviews || {}).filter(k => archivedSet.has(canonReviewKey(k)));
         if (resucitadas.length) {
           postJSON(url, { action: "archive_reviews", keys: resucitadas })
             .then(r => console.info(`Limpieza de ${resucitadas.length} reviews resucitadas:`, r))
@@ -892,6 +896,7 @@ export async function archiveReviews(keys, onProgress) {
   const total = keys.length;
   let done = 0;
   let archived = 0;
+  let dropped = 0;
   if (onProgress) onProgress({ done: 0, total });
 
   for (let i = 0; i < keys.length; i += ARCHIVE_BATCH_SIZE) {
@@ -927,6 +932,7 @@ export async function archiveReviews(keys, onProgress) {
       throw e;
     }
     archived += Number(r.archived) || 0;
+    dropped += Number(r.dropped) || 0;
 
     // Limpiar copias locales del lote confirmado (bajo lock, como toda
     // operación read-modify-write sobre data_reviews).
@@ -950,5 +956,5 @@ export async function archiveReviews(keys, onProgress) {
     if (i + ARCHIVE_BATCH_SIZE < keys.length) await new Promise(res => setTimeout(res, BATCH_PAUSE_MS));
   }
 
-  return { ok: true, total, archived };
+  return { ok: true, total, archived, dropped };
 }

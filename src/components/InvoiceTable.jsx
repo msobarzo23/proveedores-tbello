@@ -124,8 +124,13 @@ export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, s
     setArchiving({ done: 0, total: archivables.length });
     try {
       const r = await onArchive(archivables, (p) => setArchiving(p));
-      setArchiveResult({ ok: true, msg: `✓ ${Number(r?.archived ?? archivables.length).toLocaleString("es-CL")} facturas archivadas` });
-      setTimeout(() => setArchiveResult(null), 8000);
+      const movidas = (Number(r?.archived) || 0) + (Number(r?.dropped) || 0);
+      if (movidas > 0) {
+        setArchiveResult({ ok: true, msg: `✓ ${archivables.length.toLocaleString("es-CL")} facturas archivadas (${movidas.toLocaleString("es-CL")} revisiones movidas en el Sheet)` });
+        setTimeout(() => setArchiveResult(null), 8000);
+      } else {
+        setArchiveResult({ ok: false, msg: "⚠️ No se encontró ninguna revisión que archivar en el Sheet. Verifica que el Code.gs esté actualizado (versión nueva de la implementación) y vuelve a intentar." });
+      }
     } catch (e) {
       setArchiveResult({ ok: false, msg: `⚠️ ${e.message}` });
     } finally {

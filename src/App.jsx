@@ -472,13 +472,36 @@ export default function App() {
   // Archiva facturas del Histórico (pagadas + OK/REVISADA): mueve sus reviews
   // a la hoja ReviewsArchivo del Sheet y refresca para que salgan del listado
   // y de las próximas cargas. El detalle queda consultable en el Google Sheet.
+  //
+  // OJO: la review que le dio el estado OK/REVISADA a la fila puede vivir
+  // bajo OTRA key que row.key — el texto del tipoDoc varía entre exports de
+  // Defontana y applyReviewState la recupera por el fallback rut|folio.
+  // Archivar solo row.key dejaba la review real intacta en el Sheet y la
+  // factura reaparecía tras el refresh ("0 facturas archivadas"). Por eso
+  // expandimos a TODAS las keys de reviews con el mismo rut|folio.
   const handleArchive = useCallback(async (rowsToArchive, onProgress) => {
-    const keys = rowsToArchive.map(r => r.key).filter(Boolean);
+    const byRutFolio = new Map();
+    for (const k of Object.keys(reviews || {})) {
+      if (k.startsWith("FCL|")) continue;
+      const p = k.split("|");
+      if (p.length < 2 || !p[0] || !p[1]) continue;
+      const rf = `${p[0]}|${p[1]}`;
+      if (!byRutFolio.has(rf)) byRutFolio.set(rf, []);
+      byRutFolio.get(rf).push(k);
+    }
+    const keySet = new Set();
+    for (const row of rowsToArchive) {
+      if (row.key) keySet.add(row.key);
+      if (row.rut && row.folio) {
+        for (const k of byRutFolio.get(`${row.rut}|${row.folio}`) || []) keySet.add(k);
+      }
+    }
+    const keys = Array.from(keySet);
     if (!keys.length) return { ok: true, total: 0, archived: 0 };
     const r = await archiveReviews(keys, onProgress);
     await refresh();
     return r;
-  }, [refresh]);
+  }, [refresh, reviews]);
 
   // Dispara la sincronización manual de reviews pendientes. Re-fetchea GAS,
   // calcula qué falta, y las sube una por una mostrando progreso. Al terminar,

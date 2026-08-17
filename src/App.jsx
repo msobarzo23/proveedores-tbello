@@ -1025,7 +1025,7 @@ export default function App() {
               salen de la app y de las próximas cargas, pero quedan guardadas en la hoja
               ReviewsArchivo del Google Sheet.
             </div>
-            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} onArchive={handleArchive} showEstadoFilter defaultShowPagadas exportName="historico" />
+            <InvoiceTable rows={historicoRows} onMark={handleMark} onNote={handleNote} onArchive={handleArchive} showEstadoFilter alwaysShowPagadas exportName="historico" />
           </>
         )}
       </div>

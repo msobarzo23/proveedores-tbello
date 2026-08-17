@@ -3,12 +3,12 @@ import { fmtCLP, fmtRut, fmtDate, STATE_COLORS, normalizeSearch, parseDate } fro
 import { IconCheck, IconAlert, IconFlag, IconDone, IconSearch } from "./Icons";
 import { exportFacturasExcel } from "../lib/export";
 
-export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, showProblems = false, showEstadoFilter = false, defaultShowPagadas = false, exportName = "facturas" }) {
+export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, showProblems = false, showEstadoFilter = false, alwaysShowPagadas = false, exportName = "facturas" }) {
   const [searchText, setSearchText] = useState("");
   const [filterCond, setFilterCond] = useState("TODAS");
   const [filterAlert, setFilterAlert] = useState("TODAS");
   const [filterEstado, setFilterEstado] = useState("TODAS");
-  const [showPagadas, setShowPagadas] = useState(defaultShowPagadas);
+  const [soloPagadas, setSoloPagadas] = useState(false);
   const [sortCol, setSortCol] = useState("fechaFactura");
   const [sortDir, setSortDir] = useState("desc");
   const [archiving, setArchiving] = useState(null); // { done, total } | null
@@ -25,14 +25,14 @@ export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, s
     const qRaw = deferredSearch.toLowerCase().trim();
     const qNorm = normalizeSearch(deferredSearch);
     return rows.filter(r => {
-      // Las pagadas (saldo 0) se ocultan por defecto para enfocar lo pendiente,
-      // PERO una factura sospechosa nunca se esconde por estar pagada: sigue
-      // siendo relevante para la auditoría aunque ya se haya cancelado.
-      // Con el toggle activado se muestra TODO (pagadas + pendientes); antes
-      // mostraba "solo pagadas" y en Histórico escondía las facturas OK con
-      // saldo. En Problemas nunca se oculta nada: si la marcaste REVISAR,
-      // tiene que estar visible siempre.
-      if (!showProblems && !showPagadas && r.pagada && !r.sospechosa) {
+      // Toggle "Solo pagadas" encendido: filtro exclusivo, se ven únicamente
+      // las facturas con saldo $0 (pagadas) y se excluye todo lo demás.
+      if (soloPagadas && !r.pagada) return false;
+      // Toggle apagado: en Principal las pagadas (saldo 0) se ocultan para
+      // enfocar lo pendiente, PERO una factura sospechosa nunca se esconde
+      // por estar pagada. En Histórico (alwaysShowPagadas) y en Problemas
+      // nunca se oculta nada por defecto.
+      if (!soloPagadas && !showProblems && !alwaysShowPagadas && r.pagada && !r.sospechosa) {
         return false;
       }
       if (qRaw) {
@@ -56,7 +56,7 @@ export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, s
       if (showEstadoFilter && filterEstado !== "TODAS" && r.estadoRev !== filterEstado) return false;
       return true;
     });
-  }, [rows, deferredSearch, filterCond, filterAlert, filterEstado, showEstadoFilter, showPagadas, showProblems]);
+  }, [rows, deferredSearch, filterCond, filterAlert, filterEstado, showEstadoFilter, soloPagadas, showProblems, alwaysShowPagadas]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -230,14 +230,14 @@ export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, s
         )}
         {!showProblems && pagadasCount > 0 && (
           <button
-            onClick={() => setShowPagadas(v => !v)}
-            title={showPagadas ? "Ocultar facturas pagadas (saldo 0) no sospechosas" : "Incluir también las facturas ya pagadas (saldo 0)"}
+            onClick={() => setSoloPagadas(v => !v)}
+            title={soloPagadas ? "Mostrando solo las facturas pagadas (saldo $0); clic para volver a la vista normal" : "Mostrar únicamente las facturas pagadas (saldo $0), excluyendo el resto"}
             style={{
               padding: "10px 14px",
-              background: showPagadas ? "rgba(34,197,94,0.15)" : "rgba(30,41,59,0.6)",
-              border: `1px solid ${showPagadas ? "rgba(34,197,94,0.35)" : "rgba(59,130,246,0.2)"}`,
+              background: soloPagadas ? "rgba(34,197,94,0.15)" : "rgba(30,41,59,0.6)",
+              border: `1px solid ${soloPagadas ? "rgba(34,197,94,0.35)" : "rgba(59,130,246,0.2)"}`,
               borderRadius: 10,
-              color: showPagadas ? "#86efac" : "#cbd5e1",
+              color: soloPagadas ? "#86efac" : "#cbd5e1",
               fontSize: 12,
               fontWeight: 600,
               fontFamily: "inherit",
@@ -248,7 +248,7 @@ export default function InvoiceTable({ rows, onMark, onNote, onArchive = null, s
               whiteSpace: "nowrap",
             }}
           >
-            {showPagadas ? "✓" : "○"} Mostrar pagadas
+            {soloPagadas ? "✓" : "○"} Solo pagadas
             <span style={{
               background: "rgba(148,163,184,0.2)",
               color: "#cbd5e1",
